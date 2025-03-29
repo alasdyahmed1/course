@@ -58,6 +58,9 @@ class _DirectVideoPlayerScreenState extends State<DirectVideoPlayerScreen> {
   String _currentQuality = 'Auto'; // تغيير القيمة الافتراضية إلى Auto
   String? _currentVideoUrl;
 
+  // Add a flag to track controller disposal status
+  bool _isDisposingController = false;
+
   @override
   void initState() {
     super.initState();
@@ -99,6 +102,9 @@ class _DirectVideoPlayerScreenState extends State<DirectVideoPlayerScreen> {
         _hasError = false;
         _errorMessage = null;
       });
+
+      // Store fullscreen state if there's a previous controller
+      final wasFullScreen = _chewieController?.isFullScreen ?? false;
 
       // تحديد جودة الفيديو الافتراضية
       _currentQuality = 'Auto';
@@ -167,6 +173,8 @@ class _DirectVideoPlayerScreenState extends State<DirectVideoPlayerScreen> {
         allowPlaybackSpeedChanging: true,
         showControls: true,
         aspectRatio: _videoPlayerController.value.aspectRatio,
+        // Set initial fullscreen state to match the previous state
+        fullScreenByDefault: wasFullScreen,
         errorBuilder: (context, errorMessage) {
           return _buildErrorWidget(errorMessage);
         },
@@ -179,8 +187,8 @@ class _DirectVideoPlayerScreenState extends State<DirectVideoPlayerScreen> {
         customControls: CustomChewieControls(
           hasPreviousVideo: _hasPreviousVideo,
           hasNextVideo: _hasNextVideo,
-          onPreviousVideo: widget.onPreviousVideo,
-          onNextVideo: widget.onNextVideo,
+          onPreviousVideo: _safeNavigateToPrevious,
+          onNextVideo: _safeNavigateToNext,
           primaryColor: AppColors.buttonPrimary,
           showQualitySelector: true,
           availableQualities:
@@ -189,6 +197,17 @@ class _DirectVideoPlayerScreenState extends State<DirectVideoPlayerScreen> {
           onQualityChanged: _changeVideoQuality,
         ),
       );
+
+      // After initializing, restore fullscreen state if needed
+      if (wasFullScreen && mounted) {
+        Future.delayed(const Duration(milliseconds: 300), () {
+          if (mounted &&
+              _chewieController != null &&
+              !_chewieController!.isFullScreen) {
+            _chewieController!.enterFullScreen();
+          }
+        });
+      }
 
       // Notify when the player is created
       if (widget.onPlayerCreated != null) {
@@ -242,6 +261,9 @@ class _DirectVideoPlayerScreenState extends State<DirectVideoPlayerScreen> {
   Future<void> _changeVideoQuality(String quality) async {
     // لا نفعل شيئًا إذا كانت الجودة هي نفسها المحددة حاليًا
     if (quality == _currentQuality) return;
+
+    // Don't change quality if we're in the process of disposing
+    if (_isDisposingController) return;
 
     // حفظ حالة التشغيل الحالية
     final currentPosition = _videoPlayerController.value.position;
@@ -418,13 +440,41 @@ class _DirectVideoPlayerScreenState extends State<DirectVideoPlayerScreen> {
 
   @override
   void dispose() {
-    // Report final position
-    if (widget.onPositionChanged != null) {
-      widget.onPositionChanged!(_currentPosition);
+    // Prevent double disposal
+    if (!_isDisposingController) {
+      _isDisposingController = true;
+
+      // Report final position
+      if (widget.onPositionChanged != null) {
+        widget.onPositionChanged!(_currentPosition);
+      }
+
+      try {
+        // Properly dispose of the controllers using a safer approach
+        final playerController = _videoPlayerController;
+        final chewieCtrl = _chewieController;
+
+        // Clear references first
+        _videoPlayerController = null as VideoPlayerController;
+        _chewieController = null;
+
+        // Then dispose
+        if (playerController.value.isInitialized) {
+          playerController.pause().then((_) {
+            playerController.dispose();
+          }).catchError((e) {
+            debugPrint('Error pausing video: $e');
+          });
+        }
+
+        if (chewieCtrl != null) {
+          chewieCtrl.dispose();
+        }
+      } catch (e) {
+        debugPrint('Error disposing controllers: $e');
+      }
     }
 
-    _videoPlayerController.dispose();
-    _chewieController?.dispose();
     super.dispose();
   }
 
@@ -554,6 +604,59 @@ class _DirectVideoPlayerScreenState extends State<DirectVideoPlayerScreen> {
         });
       }
     }
+  }
+
+  // Add safe navigation methods
+  void _safeNavigateToPrevious() {
+    if (_isDisposingController) return;
+
+    // Set flag to prevent multiple navigation attempts
+    _isDisposingController = true;
+
+    // Capture the fullscreen state before navigation
+    final wasFullScreen = _chewieController?.isFullScreen ?? false;
+
+    // Store current position for reporting
+    if (widget.onPositionChanged != null) {
+      widget.onPositionChanged!(_currentPosition);
+    }
+
+    // Use a delayed callback to navigate
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (widget.onPreviousVideo != null) {
+        // Trigger the navigation callback without exiting fullscreen
+        widget.onPreviousVideo!();
+
+        // Reset the flag after navigation
+        _isDisposingController = false;
+      }
+    });
+  }
+
+  void _safeNavigateToNext() {
+    if (_isDisposingController) return;
+
+    // Set flag to prevent multiple navigation attempts
+    _isDisposingController = true;
+
+    // Capture the fullscreen state before navigation
+    final wasFullScreen = _chewieController?.isFullScreen ?? false;
+
+    // Store current position for reporting
+    if (widget.onPositionChanged != null) {
+      widget.onPositionChanged!(_currentPosition);
+    }
+
+    // Use a delayed callback to navigate
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (widget.onNextVideo != null) {
+        // Trigger the navigation callback without exiting fullscreen
+        widget.onNextVideo!();
+
+        // Reset the flag after navigation
+        _isDisposingController = false;
+      }
+    });
   }
 
   @override

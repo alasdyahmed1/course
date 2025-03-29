@@ -1,3 +1,4 @@
+import 'package:chewie/chewie.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
@@ -332,7 +333,8 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
   }
 
   // Keep this implementation of _playVideoInline but make it safer
-  void _playVideoInline(CourseVideo video, {bool resetPosition = false}) {
+  void _playVideoInline(CourseVideo video,
+      {bool resetPosition = false, bool preserveFullscreen = false}) {
     if (!_isActive || !mounted || _isRebuildPrevented) return;
 
     // منع تغيير الفيديو أثناء تنظيف مشغل آخر
@@ -341,7 +343,9 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
       // استخدام مؤقت واحد فقط لتجنب تكرار الطلبات
       Future.delayed(const Duration(milliseconds: 300), () {
         if (_isActive && mounted && !_isRebuildPrevented) {
-          _playVideoInline(video, resetPosition: resetPosition);
+          _playVideoInline(video,
+              resetPosition: resetPosition,
+              preserveFullscreen: preserveFullscreen);
         }
       });
       return;
@@ -365,6 +369,11 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
     final oldController = _videoPlayerController;
     _videoPlayerController = null;
 
+    // Save current state
+    final wasFullScreen = preserveFullscreen ||
+        (_videoPlayerController is ChewieController &&
+            (_videoPlayerController as ChewieController).isFullScreen);
+
     setState(() {
       _selectedVideo = video;
       _isDetailsExpanded = false;
@@ -378,35 +387,25 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
       }
     });
 
-    // تنظيف المشغل القديم بعد التحديث
-    Future.delayed(const Duration(milliseconds: 300), () {
-      if (!_isActive || !mounted) return;
+    // Clean up old controller after state update
+    _disposeVideoControllerSafely(oldController);
 
-      try {
-        if (oldController != null) {
-          if (oldController is VideoPlayerController) {
-            oldController.pause().then((_) {
-              oldController.dispose();
-            }).catchError((e) {
-              debugPrint('⚠️ خطأ في تنظيف المشغل القديم: $e');
-            });
-          } else if (oldController is Player) {
-            oldController.dispose().catchError((e) {
-              debugPrint('⚠️ خطأ في تنظيف المشغل القديم: $e');
-            });
-          }
+    // Finish navigation after a short delay
+    Future.delayed(const Duration(milliseconds: 100), () {
+      if (mounted) {
+        setState(() {
+          _isNavigating = false;
+        });
+
+        // If we need to restore fullscreen state, do it after the player is initialized
+        if (wasFullScreen) {
+          Future.delayed(const Duration(milliseconds: 500), () {
+            if (_videoPlayerController is ChewieController && mounted) {
+              (_videoPlayerController as ChewieController).enterFullScreen();
+            }
+          });
         }
-      } catch (e) {
-        debugPrint('⚠️ خطأ في تنظيف المشغل القديم: $e');
       }
-    });
-
-    Future.delayed(const Duration(milliseconds: 300), () {
-      if (!_isActive || !mounted || _isRebuildPrevented) return;
-
-      setState(() {
-        _isNavigating = false;
-      });
     });
   }
 
@@ -502,14 +501,38 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
   void _navigateToPreviousVideo() {
     final previousVideo = _findPreviousVideo();
     if (previousVideo != null) {
-      _playVideoInline(previousVideo);
+      // Save current fullscreen state before switching videos
+      final wasFullScreen = _videoPlayerController is ChewieController &&
+          (_videoPlayerController as ChewieController).isFullScreen;
+
+      // Save current position
+      _saveCurrentPlaybackPosition();
+
+      // Switch videos with a small delay to allow UI to update
+      Future.delayed(const Duration(milliseconds: 50), () {
+        if (mounted) {
+          _playVideoInline(previousVideo, preserveFullscreen: wasFullScreen);
+        }
+      });
     }
   }
 
   void _navigateToNextVideo() {
     final nextVideo = _findNextVideo();
     if (nextVideo != null) {
-      _playVideoInline(nextVideo);
+      // Save current fullscreen state before switching videos
+      final wasFullScreen = _videoPlayerController is ChewieController &&
+          (_videoPlayerController as ChewieController).isFullScreen;
+
+      // Save current position
+      _saveCurrentPlaybackPosition();
+
+      // Switch videos with a small delay to allow UI to update
+      Future.delayed(const Duration(milliseconds: 50), () {
+        if (mounted) {
+          _playVideoInline(nextVideo, preserveFullscreen: wasFullScreen);
+        }
+      });
     }
   }
 
@@ -920,6 +943,31 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
 
     // بدء تحميل البيانات الجديدة
     await _loadVideosAndSections();
+  }
+
+  // Helper method for safely disposing controllers
+  void _disposeVideoControllerSafely(dynamic controller) {
+    if (controller == null) return;
+
+    Future.delayed(const Duration(milliseconds: 100), () {
+      try {
+        if (controller is VideoPlayerController) {
+          controller.pause().then((_) {
+            controller.dispose();
+          }).catchError((e) {
+            debugPrint('⚠️ Error disposing VideoPlayerController: $e');
+          });
+        } else if (controller is ChewieController) {
+          controller.dispose();
+        } else if (controller is Player) {
+          controller.dispose().catchError((e) {
+            debugPrint('⚠️ Error disposing Player: $e');
+          });
+        }
+      } catch (e) {
+        debugPrint('⚠️ Error disposing controller: $e');
+      }
+    });
   }
 
   @override

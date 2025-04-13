@@ -19,10 +19,10 @@ class CourseVideoDetailComponent {
   }) {
     if (selectedVideo == null) return const SizedBox.shrink();
 
-    bool hasDescription = selectedVideo.description != null &&
-        selectedVideo.description!.isNotEmpty;
-    bool hasAttachments = selectedVideo.attachments != null &&
-        selectedVideo.attachments!.isNotEmpty;
+    // تحديد ما إذا كان هناك وصف للفيديو أو ملفات مرفقة
+    bool hasDescription = selectedVideo.description.isNotEmpty;
+    bool hasAttachments =
+        selectedVideo.files != null && selectedVideo.files!.isNotEmpty;
     bool hasDetails = hasDescription || hasAttachments;
 
     return Container(
@@ -89,7 +89,7 @@ class CourseVideoDetailComponent {
           ),
           const SizedBox(height: 8),
 
-          // Show more/less button
+          // Show more/less button - إظهار زر فقط عندما تكون هناك تفاصيل
           if (hasDetails)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 2),
@@ -154,7 +154,7 @@ class CourseVideoDetailComponent {
                     ),
                   if (hasAttachments)
                     Text(
-                      '${selectedVideo.attachments!.length} ملف مرفق',
+                      '${selectedVideo.files!.length} ملف مرفق',
                       style: TextStyle(
                         color: Colors.grey.shade600,
                         fontSize: 10,
@@ -255,7 +255,7 @@ class CourseVideoDetailComponent {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        selectedVideo.description!,
+                        selectedVideo.description,
                         style: TextStyle(
                           fontSize: 14,
                           color: Colors.grey.shade800,
@@ -268,7 +268,7 @@ class CourseVideoDetailComponent {
               if (hasDescription && hasAttachments) const SizedBox(height: 12),
               if (hasAttachments)
                 buildAttachmentsList(
-                  attachments: selectedVideo.attachments!,
+                  attachments: selectedVideo.files!,
                   onOpenAttachment: onOpenAttachment,
                   onDeleteAttachment: onDeleteAttachment,
                 ),

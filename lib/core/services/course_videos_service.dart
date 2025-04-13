@@ -32,6 +32,10 @@ class CourseVideosService {
   static final String? _bunnyCdnDomain =
       dotenv.env['BUNNY_CDN_DOMAIN']; // إضافة نطاق CDN
 
+  // Add a variable for API base URL
+  static const String apiBaseUrl =
+      '/api'; // Replace with your actual API base URL
+
   // Obtener los videos de un curso
   static Future<List<CourseVideo>> getCourseVideos(String courseId) async {
     try {
@@ -48,17 +52,38 @@ class CourseVideosService {
     }
   }
 
-  // Add new method to get course sections
+  // Modify the getCourseSections method to include video counts
   static Future<List<CourseSection>> getCourseSections(String courseId) async {
     try {
-      final response = await _supabase
+      // Get the sections
+      final sectionsResponse = await _supabase
           .from('course_sections')
           .select('*')
           .eq('course_id', courseId)
           .order('order_number');
-      return (response as List)
+
+      final List<CourseSection> sections = (sectionsResponse as List)
           .map((data) => CourseSection.fromJson(data))
           .toList();
+
+      // Get the video counts for each section - use a different approach instead of group
+      if (sections.isNotEmpty) {
+        // Instead of using group, count videos for each section individually
+        for (var section in sections) {
+          final videoCountResponse = await _supabase
+              .from('course_videos')
+              .select(
+                  '*') // Just select all fields, we'll only count the records
+              .eq('section_id', section.id)
+              .eq('course_id', courseId);
+
+          // Count the number of records in the response
+          final count = (videoCountResponse as List).length;
+          section.videoCount = count;
+        }
+      }
+
+      return sections;
     } catch (e) {
       debugPrint('Error fetching course sections: $e');
       throw Exception('فشل في تحميل أقسام الكورس: $e');
@@ -109,15 +134,17 @@ class CourseVideosService {
         'video_id': video.videoId,
         'duration': video.duration,
         'order_number': nextOrder,
-        'created_at': video.createdAt.toIso8601String(),
+        // Remove the createdAt field - let Supabase create it automatically
       };
+
       // Only add section_id if it's not null and not empty
       if (video.sectionId != null && video.sectionId!.isNotEmpty) {
-        videoData['section_id'] = video.sectionId;
+        videoData['section_id'] = video.sectionId as dynamic;
         debugPrint('Adding section_id: ${video.sectionId} to video data');
       } else {
         debugPrint('No section_id added to video data');
       }
+
       // Add debug info
       debugPrint('Sending video data to database: $videoData');
       final response = await _supabase
@@ -125,6 +152,7 @@ class CourseVideosService {
           .insert(videoData)
           .select()
           .single();
+
       // Actualizar el recuento de videos en el curso
       await _updateCourseVideoCount(video.courseId);
       debugPrint('Video created successfully: ${response['id']}');
@@ -135,12 +163,12 @@ class CourseVideosService {
     }
   }
 
-  // Actualizar un video existente - Fix the section_id handling
+  // Actualizar un video existente - Fix the section_id handling and null safety
   static Future<CourseVideo> updateCourseVideo(
       String id, CourseVideo video) async {
     try {
       // Create a data map without section_id first
-      final videoData = {
+      final Map<String, dynamic> videoData = {
         'course_id': video.courseId,
         'title': video.title,
         'description': video.description,
@@ -148,10 +176,13 @@ class CourseVideosService {
         'duration': video.duration,
         'order_number': video.orderNumber,
       };
+
       // Only add section_id if it's not null and not empty
       if (video.sectionId != null && video.sectionId!.isNotEmpty) {
-        videoData['section_id'] = video.sectionId;
+        // Cast String? to dynamic which is accepted by Map<String, dynamic>
+        videoData['section_id'] = video.sectionId as dynamic;
       }
+
       final response = await _supabase
           .from('course_videos')
           .update(videoData)
@@ -524,6 +555,31 @@ class CourseVideosService {
       }).eq('id', courseId);
     } catch (e) {
       debugPrint('Error updating course video count: $e');
+    }
+  }
+
+  /// تحديث ترتيب الفيديو
+  static Future<void> updateVideoOrder(
+      String videoId, int newOrderNumber, String? sectionId) async {
+    try {
+      // تحضير البيانات للتحديث
+      final Map<String, dynamic> data = {
+        'order_number': newOrderNumber,
+      };
+
+      // إضافة معرف القسم إذا كان موجوداً
+      if (sectionId != null) {
+        // Cast String? to dynamic which is accepted by Map<String, dynamic>
+        data['section_id'] = sectionId as dynamic;
+      }
+
+      // استخدام Supabase بدلاً من ApiClient
+      await _supabase.from('course_videos').update(data).eq('id', videoId);
+
+      debugPrint('✅ تم تحديث ترتيب الفيديو بنجاح');
+    } catch (e) {
+      debugPrint('❌ خطأ في تحديث ترتيب الفيديو: $e');
+      rethrow;
     }
   }
 }

@@ -20,23 +20,34 @@ dependencies:
   page_transition: ^2.2.1
   auto_animated: ^3.2.0
   flutter_dotenv: ^5.2.1
-  # إضافة المكتبات الناقصة
+  # Fix flutter_secure_storage to a compatible version
   flutter_secure_storage: ^9.2.4
+  # Downgrade js to be compatible with flutter_secure_storage_web
+  js: ^0.6.7  # Changed from ^0.7.2 to ^0.6.7 to be compatible with flutter_secure_storage
+  # Downgrade freezed_annotation to be compatible with pod_player -> youtube_explode_dart
+  freezed_annotation: ^2.4.1  # Changed from ^3.0.0 to ^2.4.1
+  intl: ^0.19.0
+  permission_handler_android: ^12.1.0
+  material_color_utilities: ^0.11.1
+  fake_async: ^1.3.2
+  leak_tracker: ^10.0.8
+  vm_service: ^14.3.1
   path_provider: ^2.1.5
   flutter_pdfview: ^1.4.0
   open_file: ^3.5.10
-  # حذف better_player واستبداله بـ video_player و chewie
+  # Video player dependencies
   video_player: ^2.9.3
   chewie: ^1.11.0
   image_picker: ^1.1.2
   http: ^1.3.0
+  async: ^2.12.0
   webview_flutter: ^4.10.0
-  webview_flutter_android: ^4.3.4  # Add Android implementation
-  webview_flutter_wkwebview: ^3.18.4  # Add iOS implementation
+  webview_flutter_android: ^4.3.4
+  webview_flutter_wkwebview: ^3.18.4
   url_launcher: ^6.3.1
   flutter_localizations:
     sdk: flutter
-  # إضافة حزم مخصصة للويندوز
+  # Windows-specific dependencies
   window_size:
     git:
       url: https://github.com/google/flutter-desktop-embedding
@@ -49,17 +60,18 @@ dependencies:
   share_plus: ^10.1.4
   shared_preferences: ^2.5.3
   
-  # إضافة مكتبات مشغل فيديو متطورة
-  pod_player: ^0.2.2  # مشغل فيديو شبيه بيوتيوب
-  media_kit: ^1.1.11           # مكتبة شاملة لتشغيل الوسائط
-  media_kit_video: ^1.2.5      # إضافة دعم الفيديو لـ media_kit
-  media_kit_libs_android_video: ^1.3.6  # مكتبات أندرويد
-  media_kit_libs_ios_video: ^1.1.4      # مكتبات iOS
+  # Video player libraries
+  pod_player: ^0.2.2
+  media_kit: ^1.1.11
+  media_kit_video: ^1.2.5
+  media_kit_libs_android_video: ^1.3.6
+  media_kit_libs_ios_video: ^1.1.4
   
-  # للواجهة المطورة
-  wakelock_plus: ^1.2.10  # منع قفل الشاشة أثناء التشغيل
+  # UI enhancements
+  wakelock_plus: ^1.2.10
   image_cropper: ^9.0.0
   cached_network_image: ^3.4.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

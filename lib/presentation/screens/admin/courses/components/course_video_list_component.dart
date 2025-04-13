@@ -19,10 +19,14 @@ class CourseVideoListComponent {
     required ScrollController scrollController,
     required CourseVideo? selectedVideo,
     required Function(String) onToggleSection,
-    required Function(CourseVideo, {bool resetPosition}) onPlayVideoInline,
+    required Function(CourseVideo,
+            {bool resetPosition, bool preserveFullscreen})
+        onPlayVideoInline,
     required VoidCallback onAddNewVideo,
     required Function(CourseVideo) onPlayVideo,
     required Map<String, Duration> videoPositions,
+    required Function(CourseVideo, int, String?)
+        onReorderVideo, // New callback for reordering
   }) {
     if (videos.isEmpty) {
       return EmptyState(
@@ -113,6 +117,7 @@ class CourseVideoListComponent {
                       onPlayVideoInline: onPlayVideoInline,
                       onPlayVideo: onPlayVideo,
                       videoPositions: videoPositions,
+                      onReorderVideo: onReorderVideo, // Pass reorder callback
                     )),
 
                 // Render uncategorized videos if any
@@ -125,6 +130,7 @@ class CourseVideoListComponent {
                     onPlayVideoInline: onPlayVideoInline,
                     onPlayVideo: onPlayVideo,
                     videoPositions: videoPositions,
+                    onReorderVideo: onReorderVideo, // Pass reorder callback
                   ),
               ],
             ),
@@ -141,9 +147,13 @@ class CourseVideoListComponent {
     required bool isExpanded,
     required CourseVideo? selectedVideo,
     required VoidCallback onToggleSection,
-    required Function(CourseVideo, {bool resetPosition}) onPlayVideoInline,
+    required Function(CourseVideo,
+            {bool resetPosition, bool preserveFullscreen})
+        onPlayVideoInline,
     required Function(CourseVideo) onPlayVideo,
     required Map<String, Duration> videoPositions,
+    required Function(CourseVideo, int, String?)
+        onReorderVideo, // New callback for reordering
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -241,19 +251,14 @@ class CourseVideoListComponent {
               ),
             )
           else
-            Column(
-              children: List.generate(videos.length, (index) {
-                final video = videos[index];
-                final isSelected = selectedVideo?.id == video.id;
-                return buildCompactVideoItem(
-                  video: video,
-                  index: index,
-                  isSelected: isSelected,
-                  onTap: () => onPlayVideoInline(video),
-                  onPlayPressed: () => onPlayVideo(video),
-                  videoPositions: videoPositions,
-                );
-              }),
+            _buildVideoListForSection(
+              videos: videos,
+              selectedVideo: selectedVideo,
+              onTap: onPlayVideoInline,
+              onLongPress: onPlayVideo,
+              videoPositions: videoPositions,
+              sectionId: section.id,
+              onReorderVideo: onReorderVideo, // Pass reorder callback
             ),
         ],
 
@@ -268,9 +273,13 @@ class CourseVideoListComponent {
     required bool isExpanded,
     required CourseVideo? selectedVideo,
     required VoidCallback onToggleSection,
-    required Function(CourseVideo, {bool resetPosition}) onPlayVideoInline,
+    required Function(CourseVideo,
+            {bool resetPosition, bool preserveFullscreen})
+        onPlayVideoInline,
     required Function(CourseVideo) onPlayVideo,
     required Map<String, Duration> videoPositions,
+    required Function(CourseVideo, int, String?)
+        onReorderVideo, // New callback for reordering
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -336,19 +345,14 @@ class CourseVideoListComponent {
           ),
         ),
         if (isExpanded)
-          Column(
-            children: List.generate(videos.length, (index) {
-              final video = videos[index];
-              final isSelected = selectedVideo?.id == video.id;
-              return buildCompactVideoItem(
-                video: video,
-                index: index,
-                isSelected: isSelected,
-                onTap: () => onPlayVideoInline(video),
-                onPlayPressed: () => onPlayVideo(video),
-                videoPositions: videoPositions,
-              );
-            }),
+          _buildVideoListForSection(
+            videos: videos,
+            selectedVideo: selectedVideo,
+            onTap: onPlayVideoInline,
+            onLongPress: onPlayVideo,
+            videoPositions: videoPositions,
+            sectionId: null,
+            onReorderVideo: onReorderVideo, // Pass reorder callback
           ),
         const SizedBox(height: 8),
       ],
@@ -534,5 +538,229 @@ class CourseVideoListComponent {
         ),
       ),
     );
+  }
+
+  static Widget _buildSectionHeader({
+    required CourseSection? section,
+    required bool isExpanded,
+    required VoidCallback onToggle,
+  }) {
+    return InkWell(
+      onTap: onToggle,
+      child: Container(
+        color: AppColors.primaryLight.withOpacity(0.05),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Row(
+          children: [
+            Icon(
+              isExpanded
+                  ? Icons.keyboard_arrow_down
+                  : Icons.keyboard_arrow_left,
+              color: AppColors.buttonPrimary,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                section?.title ?? 'فيديوهات غير مصنفة',
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                ),
+              ),
+            ),
+            Text(
+              '${section?.videoCount ?? 0} فيديو',
+              style: TextStyle(
+                color: Colors.grey.shade600,
+                fontSize: 12,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // تعديل دالة عرض قائمة الفيديوهات لإعادة هيكلة طريقة السحب والإفلات
+  static Widget _buildVideoListForSection({
+    required List<CourseVideo> videos,
+    required CourseVideo? selectedVideo,
+    required Function(CourseVideo,
+            {bool resetPosition, bool preserveFullscreen})
+        onTap,
+    required Function(CourseVideo) onLongPress,
+    required Map<String, Duration> videoPositions,
+    required String? sectionId,
+    required Function(CourseVideo, int, String?) onReorderVideo,
+  }) {
+    // استخدام ReorderableListView المُعتاد بدلاً من ReorderableListView.builder
+    return ReorderableListView(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      children: videos.map((video) {
+        final isSelected = selectedVideo?.id == video.id;
+        final hasProgress = videoPositions.containsKey(video.id);
+        final progress = hasProgress
+            ? videoPositions[video.id]!.inSeconds / video.duration
+            : 0.0;
+
+        return _buildReorderableVideoItem(
+          key: Key(video.id),
+          video: video,
+          isSelected: isSelected,
+          progress: progress,
+          onTap: () => onTap(video),
+          hasProgress: hasProgress,
+          sectionId: sectionId,
+        );
+      }).toList(),
+      onReorder: (oldIndex, newIndex) {
+        // Adjust for removing and insertion position
+        if (oldIndex < newIndex) {
+          newIndex -= 1;
+        }
+        // Handle reordering
+        final video = videos[oldIndex];
+        onReorderVideo(video, newIndex, sectionId);
+      },
+    );
+  }
+
+  // Widget منفصل لعنصر الفيديو القابل لإعادة الترتيب
+  static Widget _buildReorderableVideoItem({
+    required Key key,
+    required CourseVideo video,
+    required bool isSelected,
+    required double progress,
+    required VoidCallback onTap,
+    required bool hasProgress,
+    required String? sectionId,
+  }) {
+    return Card(
+      key: key,
+      elevation: isSelected ? 2 : 1,
+      margin: const EdgeInsets.only(bottom: 8),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(
+          color: isSelected ? AppColors.buttonPrimary : Colors.grey.shade200,
+          width: isSelected ? 2 : 1,
+        ),
+      ),
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          child: Row(
+            children: [
+              // Drag Handle (visible cue that this is reorderable)
+              Container(
+                margin: const EdgeInsets.only(right: 12),
+                child: Icon(
+                  Icons.drag_indicator,
+                  color: isSelected
+                      ? AppColors.buttonPrimary
+                      : Colors.grey.shade500,
+                  size: 20,
+                ),
+              ),
+
+              // Video Icon and Details
+              Expanded(
+                child: Row(
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? AppColors.buttonPrimary
+                            : Colors.grey.shade200,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Icon(
+                        Icons.videocam,
+                        color: isSelected ? Colors.white : Colors.grey.shade700,
+                        size: 18,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            video.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontWeight: isSelected
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                              color: isSelected
+                                  ? AppColors.buttonPrimary
+                                  : Colors.black87,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Text(
+                                _formatDuration(video.duration),
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey.shade600,
+                                ),
+                              ),
+                              if (sectionId != null) ...[
+                                const SizedBox(width: 8),
+                                Icon(
+                                  Icons.folder,
+                                  size: 12,
+                                  color: Colors.grey.shade600,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  'مُصنف',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey.shade600,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                          if (hasProgress) ...[
+                            const SizedBox(height: 4),
+                            LinearProgressIndicator(
+                              value: progress,
+                              backgroundColor: Colors.grey.shade200,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                AppColors.buttonPrimary,
+                              ),
+                              minHeight: 2,
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  static String _formatDuration(int seconds) {
+    final duration = Duration(seconds: seconds);
+    String twoDigits(int n) => n.toString().padLeft(2, '0');
+    String twoDigitMinutes = twoDigits(duration.inMinutes.remainder(60));
+    String twoDigitSeconds = twoDigits(duration.inSeconds.remainder(60));
+    return duration.inHours > 0
+        ? '${twoDigits(duration.inHours)}:$twoDigitMinutes:$twoDigitSeconds'
+        : '$twoDigitMinutes:$twoDigitSeconds';
   }
 }

@@ -4,25 +4,28 @@ class CourseVideo {
   final String id;
   final String courseId;
   final String title;
-  final String? description;
+  final String description;
   final String videoId;
   final int duration;
   final int orderNumber;
-  final DateTime createdAt;
-  final String? sectionId; // Add section_id field
-  final List<CourseFile>? attachments;
+  final DateTime? createdAt;
+  final String? sectionId;
+  final List<CourseFile>? files;
 
-  const CourseVideo({
+  // Add an alias for backward compatibility
+  List<CourseFile>? get attachments => files;
+
+  CourseVideo({
     required this.id,
     required this.courseId,
     required this.title,
-    this.description,
+    required this.description,
     required this.videoId,
     required this.duration,
     required this.orderNumber,
-    required this.createdAt,
-    this.sectionId, // Add section_id parameter
-    this.attachments,
+    this.createdAt,
+    this.sectionId,
+    this.files,
   });
 
   // Get formatted duration as string
@@ -40,25 +43,22 @@ class CourseVideo {
 
   // Create from JSON data
   factory CourseVideo.fromJson(Map<String, dynamic> json) {
-    List<CourseFile>? attachments;
-    if (json['attachments'] != null) {
-      attachments = (json['attachments'] as List)
-          .map((fileJson) => CourseFile.fromJson(fileJson))
-          .toList();
-    }
-
     return CourseVideo(
       id: json['id'] ?? '',
       courseId: json['course_id'] ?? '',
       title: json['title'] ?? '',
-      description: json['description'],
+      description: json['description'] ?? '',
       videoId: json['video_id'] ?? '',
       duration: json['duration'] ?? 0,
       orderNumber: json['order_number'] ?? 0,
-      createdAt: DateTime.parse(
-          json['created_at'] ?? DateTime.now().toIso8601String()),
-      sectionId: json['section_id'], // Parse section_id
-      attachments: attachments,
+      createdAt: json['created_at'] != null
+          ? DateTime.parse(json['created_at'])
+          : null,
+      sectionId: json['section_id'],
+      files: json['files'] != null
+          ? List<CourseFile>.from(
+              json['files'].map((x) => CourseFile.fromJson(x)))
+          : null,
     );
   }
 
@@ -72,8 +72,9 @@ class CourseVideo {
       'video_id': videoId,
       'duration': duration,
       'order_number': orderNumber,
-      'created_at': createdAt.toIso8601String(),
-      'section_id': sectionId, // Include section_id in JSON
+      'created_at': createdAt?.toIso8601String(),
+      'section_id': sectionId,
+      'files': files?.map((x) => x.toJson()).toList(),
     };
   }
 
@@ -87,8 +88,8 @@ class CourseVideo {
     int? duration,
     int? orderNumber,
     DateTime? createdAt,
-    String? sectionId, // Add sectionId parameter
-    List<CourseFile>? attachments,
+    String? sectionId,
+    List<CourseFile>? files,
   }) {
     return CourseVideo(
       id: id ?? this.id,
@@ -99,8 +100,8 @@ class CourseVideo {
       duration: duration ?? this.duration,
       orderNumber: orderNumber ?? this.orderNumber,
       createdAt: createdAt ?? this.createdAt,
-      sectionId: sectionId ?? this.sectionId, // Copy sectionId
-      attachments: attachments ?? this.attachments,
+      sectionId: sectionId ?? this.sectionId,
+      files: files ?? this.files,
     );
   }
 

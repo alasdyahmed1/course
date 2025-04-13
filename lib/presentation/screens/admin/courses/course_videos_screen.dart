@@ -255,6 +255,21 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
       final sections = results[0] as List<CourseSection>;
       final videos = results[1] as List<CourseVideo>;
 
+      // ترتيب الفيديوهات حسب الترتيب (order_number)
+      videos.sort((a, b) {
+        // إذا كان لديهما نفس القسم، رتب حسب الترتيب
+        if (a.sectionId == b.sectionId) {
+          return a.orderNumber.compareTo(b.orderNumber);
+        }
+        // إذا كان القسم مختلف، رتب حسب القسم ثم حسب الترتيب
+        if (a.sectionId != null && b.sectionId != null) {
+          final sectionCompare = a.sectionId!.compareTo(b.sectionId!);
+          if (sectionCompare != 0) return sectionCompare;
+        }
+        // رتب حسب الترتيب إذا كان القسم مختلف
+        return a.orderNumber.compareTo(b.orderNumber);
+      });
+
       // تصنيف الفيديوهات حسب القسم
       final videosBySection = <String, List<CourseVideo>>{};
       final uncategorizedVideos = <CourseVideo>[];
@@ -275,6 +290,18 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
         }
       }
 
+      // ترتيب الفيديوهات داخل كل قسم حسب الترتيب (order_number)
+      for (var sectionId in videosBySection.keys) {
+        videosBySection[sectionId]!.sort((a, b) {
+          return a.orderNumber.compareTo(b.orderNumber);
+        });
+      }
+
+      // ترتيب الفيديوهات غير المصنفة حسب الترتيب (order_number)
+      uncategorizedVideos.sort((a, b) {
+        return a.orderNumber.compareTo(b.orderNumber);
+      });
+
       // توسيع جميع الأقسام افتراضيًا
       final expandedSections = sections.map((s) => s.id).toSet();
       expandedSections.add('uncategorized');
@@ -282,6 +309,20 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
       // استعادة مواقع التشغيل المحفوظة
       _videoPositions.clear();
       _videoPositions.addAll(savedPositions);
+
+      // Count videos per section
+      final Map<String, int> sectionVideoCounts = {};
+      for (var video in videos) {
+        if (video.sectionId != null && video.sectionId!.isNotEmpty) {
+          sectionVideoCounts[video.sectionId!] =
+              (sectionVideoCounts[video.sectionId!] ?? 0) + 1;
+        }
+      }
+
+      // Update each section with its video count
+      for (var section in sections) {
+        section.videoCount = sectionVideoCounts[section.id] ?? 0;
+      }
 
       // تحديث الحالة
       if (mounted) {
@@ -301,9 +342,11 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
               if (videoIndex >= 0) {
                 _selectedVideo = videos[videoIndex];
               } else {
+                // دائمًا اختر الفيديو الأول بدلاً من الأخير
                 _selectedVideo = videos.first;
               }
             } else {
+              // دائمًا اختر الفيديو الأول بدلاً من الأخير
               _selectedVideo = videos.first;
             }
           }
@@ -360,26 +403,26 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
       return;
     }
 
+    // تفريغ المشغل الحالي قبل تغيير الفيديو
     // حفظ موضع التشغيل الحالي قبل تغيير الفيديو
     if (_selectedVideo != null && _selectedVideo!.id != video.id) {
       _saveCurrentPlaybackPosition();
     }
-
-    // تفريغ المشغل الحالي قبل تغيير الفيديو
-    final oldController = _videoPlayerController;
-    _videoPlayerController = null;
 
     // Save current state
     final wasFullScreen = preserveFullscreen ||
         (_videoPlayerController is ChewieController &&
             (_videoPlayerController as ChewieController).isFullScreen);
 
+    // تفريغ المشغل الحالي قبل تغيير الفيديو
+    final oldController = _videoPlayerController;
+    _videoPlayerController = null;
+
     setState(() {
       _selectedVideo = video;
       _isDetailsExpanded = false;
       _showVideoDetails = false;
       _isNavigating = true;
-
       if (resetPosition) {
         _currentVideoPosition = Duration.zero;
       } else {
@@ -413,10 +456,8 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
   void _playVideo(CourseVideo video) {
     CourseVideoDialogUtils.showLoadingDialog(
         context, 'جاري التحقق من خيارات التشغيل...');
-
     DrmHelper.isVideoDrmProtected(video.videoId).then((isDrmProtected) {
       Navigator.of(context).pop();
-
       setState(() {
         _isDrmProtected = isDrmProtected;
       });
@@ -463,16 +504,20 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
 
   Duration? _getCurrentPosition() {
     try {
-      if (_videoPlayerController == null) return null;
-
-      if (_videoPlayerController.position != null) {
-        return _videoPlayerController.position;
-      } else if (_videoPlayerController.value?.position != null) {
-        return _videoPlayerController.value.position;
-      } else if (_videoPlayerController.getCurrentPosition != null) {
-        return _currentVideoPosition;
+      if (_videoPlayerController != null) {
+        if (_videoPlayerController is VideoPlayerController) {
+          final videoPlayerController =
+              _videoPlayerController as VideoPlayerController;
+          return videoPlayerController.value.position;
+        } else if (_videoPlayerController is ChewieController) {
+          final chewieController = _videoPlayerController as ChewieController;
+          return chewieController.videoPlayerController.value.position;
+        } else if (_videoPlayerController is Player) {
+          final playerController = _videoPlayerController as Player;
+          // Fix for Player class - use the position property instead of getCurrentPosition
+          return playerController.state.position;
+        }
       }
-
       return _currentVideoPosition.isNegative ? null : _currentVideoPosition;
     } catch (e) {
       return null;
@@ -563,7 +608,6 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
       context,
       MaterialPageRoute(builder: (_) => AddVideoScreen(course: widget.course)),
     );
-
     if (result == true) {
       _loadVideosAndSections();
     }
@@ -577,7 +621,6 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
             AddVideoScreen(course: widget.course, videoToEdit: video),
       ),
     );
-
     if (result == true) {
       _loadVideosAndSections();
     }
@@ -595,7 +638,6 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
         setState(() => _isLoading = true);
         await CourseVideosService.deleteCourseVideo(video.id, widget.course.id);
         _loadVideosAndSections();
-
         if (mounted) {
           CourseVideoDialogUtils.showSnackBar(
             context,
@@ -608,7 +650,6 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
           _errorMessage = e.toString();
           _isLoading = false;
         });
-
         if (mounted) {
           CourseVideoDialogUtils.showSnackBar(
             context,
@@ -632,14 +673,11 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
       try {
         setState(() => _isLoading = true);
         final String? storageFilePath = _extractFilePathFromId(file.fileId);
-
         if (storageFilePath != null) {
           await BunnyStorageService.deleteFile(storageFilePath);
         }
-
         await CourseVideosService.deleteCourseFile(file.id);
         _loadVideosAndSections();
-
         if (mounted) {
           CourseVideoDialogUtils.showSnackBar(
             context,
@@ -652,7 +690,6 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
           _errorMessage = e.toString();
           _isLoading = false;
         });
-
         if (mounted) {
           CourseVideoDialogUtils.showSnackBar(
             context,
@@ -690,7 +727,6 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
   Widget _buildPlayerByType({Duration startFrom = Duration.zero}) {
     // استخدم الموقع المحفوظ إذا كان المشغل قد تم تصغيره سابقاً
     Duration position = startFrom;
-
     // إذا كان هناك فيديو محدد، استخدم الموقع المحفوظ له
     if (_selectedVideo != null &&
         _videoPositions.containsKey(_selectedVideo!.id)) {
@@ -760,7 +796,9 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
       return Container(
         color: Colors.black,
         child: Stack(
-          children: [_buildPlayerByType(startFrom: _currentVideoPosition)],
+          children: [
+            _buildPlayerByType(startFrom: _currentVideoPosition),
+          ],
         ),
       );
     }
@@ -791,52 +829,6 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
                 ),
               ),
             ),
-
-            // // إضافة زر عائم للتنقل بين الفيديوهات
-            // if (hasPrevious || hasNext)
-            //   Positioned.fill(
-            //     child: Row(
-            //       children: [
-            //         if (hasPrevious)
-            //           Align(
-            //             alignment: Alignment.centerRight,
-            //             child: GestureDetector(
-            //               onTap: _navigateToPreviousVideo,
-            //               child: Container(
-            //                 width: 36,
-            //                 height: 36,
-            //                 margin: const EdgeInsets.all(8),
-            //                 decoration: BoxDecoration(
-            //                   color: Colors.black45,
-            //                   shape: BoxShape.circle,
-            //                 ),
-            //                 child: const Icon(Icons.skip_previous,
-            //                     color: Colors.white),
-            //               ),
-            //             ),
-            //           ),
-            //         const Spacer(),
-            //         if (hasNext)
-            //           Align(
-            //             alignment: Alignment.centerLeft,
-            //             child: GestureDetector(
-            //               onTap: _navigateToNextVideo,
-            //               child: Container(
-            //                 width: 36,
-            //                 height: 36,
-            //                 margin: const EdgeInsets.all(8),
-            //                 decoration: BoxDecoration(
-            //                   color: Colors.black45,
-            //                   shape: BoxShape.circle,
-            //                 ),
-            //                 child: const Icon(Icons.skip_next,
-            //                     color: Colors.white),
-            //               ),
-            //             ),
-            //           ),
-            //       ],
-            //     ),
-            //   ),
           ],
         ),
 
@@ -867,7 +859,6 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
   // تحسين دالة تغيير المشغل لمنع الأخطاء أثناء التحديث
   Future<void> _changePlayerType(String playerType) async {
     if (!mounted || _isPlayerBeingDisposed || _isRebuildPrevented) return;
-
     // منع تغيير المشغل إذا كان هو نفس النوع المختار حالياً
     if (_selectedPlayerType == playerType) return;
 
@@ -899,7 +890,6 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
     Future.delayed(const Duration(milliseconds: 300), () {
       // إضافة الفحص هنا
       if (!_isActive || !mounted) return;
-
       try {
         if (oldController != null) {
           if (oldController is VideoPlayerController) {
@@ -929,7 +919,6 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
 
     // تنظيف المشغل الحالي قبل التحديث
     _disposeVideoController();
-
     if (mounted) {
       setState(() {
         _videoPlayerController = null;
@@ -948,7 +937,6 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
   // Helper method for safely disposing controllers
   void _disposeVideoControllerSafely(dynamic controller) {
     if (controller == null) return;
-
     Future.delayed(const Duration(milliseconds: 100), () {
       try {
         if (controller is VideoPlayerController) {
@@ -968,6 +956,71 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
         debugPrint('⚠️ Error disposing controller: $e');
       }
     });
+  }
+
+  // إضافة دالة إعادة ترتيب الفيديوهات
+  Future<void> _handleReorderVideo(
+      CourseVideo video, int newIndex, String? sectionId) async {
+    try {
+      // تحديد القائمة المستهدفة
+      List<CourseVideo> targetList;
+      if (sectionId != null) {
+        targetList = _videosBySection[sectionId] ?? [];
+      } else {
+        targetList = _uncategorizedVideos;
+      }
+
+      // حساب الترتيب الجديد
+      int newOrderNumber;
+      if (newIndex == 0) {
+        // إذا كان في بداية القائمة
+        newOrderNumber =
+            targetList.isEmpty ? 1 : targetList.first.orderNumber - 1;
+        // منع الأرقام السالبة
+        newOrderNumber = newOrderNumber <= 0 ? 1 : newOrderNumber;
+      } else if (newIndex >= targetList.length) {
+        // إذا كان في نهاية القائمة
+        newOrderNumber =
+            targetList.isEmpty ? 1 : targetList.last.orderNumber + 1;
+      } else {
+        // إذا كان في وسط القائمة
+        if (newIndex + 1 < targetList.length) {
+          newOrderNumber = (targetList[newIndex].orderNumber +
+                  targetList[newIndex + 1].orderNumber) ~/
+              2;
+        } else {
+          newOrderNumber = targetList[newIndex].orderNumber + 1;
+        }
+      }
+
+      setState(() {
+        _isLoading = true;
+      });
+
+      // تحديث الترتيب في قاعدة البيانات
+      await CourseVideosService.updateVideoOrder(
+          video.id, newOrderNumber, sectionId);
+
+      // إعادة تحميل البيانات
+      await _loadVideosAndSections();
+    } catch (e) {
+      debugPrint('خطأ في إعادة ترتيب الفيديو: $e');
+      if (mounted) {
+        // إظهار رسالة خطأ للمستخدم
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('حدث خطأ أثناء إعادة ترتيب الفيديو: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
   }
 
   @override
@@ -1089,6 +1142,8 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
                                 onAddNewVideo: _addNewVideo,
                                 onPlayVideo: _playVideo,
                                 videoPositions: _videoPositions,
+                                onReorderVideo:
+                                    _handleReorderVideo, // إضافة معالج إعادة الترتيب
                               ),
                   ),
                 ],

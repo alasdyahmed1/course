@@ -1121,7 +1121,42 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
                         ],
                       ),
                     ),
-
+                  // زر التمرير التلقائي للأعلى (يظهر فقط عندما تكون التفاصيل مخفية)
+                  if (!_isLoading &&
+                      _errorMessage == null &&
+                      _selectedVideo != null &&
+                      !_isDetailsVisible)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 2, horizontal: 16),
+                      child: Row(
+                        children: [
+                          Text(
+                            'اختر فيديو آخر:',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.grey.shade700,
+                            ),
+                          ),
+                          const Spacer(),
+                          TextButton(
+                            onPressed: () {
+                              _scrollController.animateTo(0,
+                                  duration: const Duration(milliseconds: 300),
+                                  curve: Curves.easeInOut);
+                            },
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 0),
+                              minimumSize: const Size(0, 24),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            child: const Text('التمرير للأعلى'),
+                          ),
+                        ],
+                      ),
+                    ),
                   // Video list
                   Expanded(
                     child: _isLoading

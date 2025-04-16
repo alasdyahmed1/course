@@ -1083,7 +1083,7 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
                         child: _buildEmbeddedPlayer(),
                       ),
                     ),
-
+                  // مشغل الفيديو (يظل مرئياً دائماً في الأعلى)
                   // زر الاستمرار في تصفح القائمة (يظهر فقط عندما تكون التفاصيل مخفية)
                   if (!_isLoading &&
                       _errorMessage == null &&

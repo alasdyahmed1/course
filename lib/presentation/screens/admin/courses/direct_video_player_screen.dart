@@ -9,6 +9,8 @@ import 'package:mycourses/models/course_video.dart';
 import 'package:mycourses/presentation/widgets/video_player/custom_chewie_controls.dart';
 import 'package:video_player/video_player.dart';
 
+import '../../../widgets/video_player/navigation_button.dart';
+
 class DirectVideoPlayerScreen extends StatefulWidget {
   final CourseVideo video;
   final bool embedded;
@@ -728,14 +730,60 @@ class _DirectVideoPlayerScreenState extends State<DirectVideoPlayerScreen> {
       );
     }
 
-    // مهم: لا نستخدم Directionality هنا حيث سنضبط اتجاه العناصر في أماكن أخرى
-    return Directionality(
-      textDirection: TextDirection.ltr, // تطبيق اتجاه LTR على مشغل الفيديو
-      child: _chewieController != null
-          ? Chewie(
-              controller: _chewieController!,
-            )
-          : const SizedBox.shrink(),
+    // إضافة أزرار التنقل بين الفيديوهات بشكل واضح على جانبي مشغل الفيديو
+    return Stack(
+      children: [
+        // مشغل الفيديو الأساسي
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: _chewieController != null
+              ? Chewie(
+                  controller: _chewieController!,
+                )
+              : const SizedBox.shrink(),
+        ),
+
+        // أزرار التنقل بين الفيديوهات (أكثر وضوحاً)
+        if (!_chewieController!.isFullScreen)
+          ..._buildNavigationOverlayButtons(),
+      ],
     );
+  }
+
+  // دالة جديدة لإنشاء أزرار التنقل بمظهر واضح
+  List<Widget> _buildNavigationOverlayButtons() {
+    if (!_hasPreviousVideo && !_hasNextVideo) return [];
+
+    return [
+      // زر الفيديو السابق
+      if (_hasPreviousVideo)
+        Positioned(
+          left: 8,
+          top: 0,
+          bottom: 0,
+          child: Center(
+            child: NavigationButton(
+              icon: Icons.skip_previous,
+              onPressed: _safeNavigateToPrevious,
+              tooltip: 'الفيديو السابق',
+            ),
+          ),
+        ),
+
+      // زر الفيديو التالي
+      if (_hasNextVideo)
+        Positioned(
+          right: 8,
+          top: 0,
+          bottom: 0,
+          child: Center(
+            child: NavigationButton(
+              icon: Icons.skip_next,
+              onPressed: _safeNavigateToNext,
+              tooltip: 'الفيديو التالي',
+            ),
+          ),
+        ),
+    ];
   }
 }

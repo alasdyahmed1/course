@@ -1,25 +1,15 @@
 import 'package:flutter/material.dart';
-import 'package:mycourses/core/constants/app_text_styles.dart';
-import 'package:mycourses/presentation/widgets/player_selector_widget.dart';
+import 'package:mycourses/core/constants/app_colors.dart';
+import 'package:mycourses/core/providers/player_options_provider.dart';
 
-class CourseVideoHeader extends StatelessWidget {
-  /// عنوان الكورس
+class CourseVideoHeader extends StatefulWidget {
   final String title;
-
-  /// استدعاء عند النقر على زر الرجوع
   final VoidCallback onBack;
-
-  /// استدعاء عند النقر على زر التحديث
   final VoidCallback onRefresh;
-
-  /// المشغل المحدد حالياً
-  final String selectedPlayerId;
-
-  /// استدعاء عند تغيير المشغل
+  final String? selectedPlayerId;
   final Function(String) onPlayerChanged;
-
-  /// ما إذا كان الفيديو الحالي محمي بتقنية DRM
   final bool isDrmProtected;
+  final int? orderNumber;
 
   const CourseVideoHeader({
     super.key,
@@ -28,71 +18,186 @@ class CourseVideoHeader extends StatelessWidget {
     required this.onRefresh,
     required this.selectedPlayerId,
     required this.onPlayerChanged,
-    this.isDrmProtected = false,
+    required this.isDrmProtected,
+    this.orderNumber,
   });
 
   @override
+  State<CourseVideoHeader> createState() => _CourseVideoHeaderState();
+}
+
+class _CourseVideoHeaderState extends State<CourseVideoHeader> {
+  // إضافة متغير للتحكم في حالة فتح القائمة
+  bool _isPlayerMenuOpen = false;
+
+  @override
   Widget build(BuildContext context) {
+    // الحصول على خيار المشغل المحدد حالياً
+    final selectedPlayerOption = PlayerOptionsProvider.getPlayerOptionById(
+        widget.selectedPlayerId ?? 'iframe');
+
     return Container(
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
       decoration: BoxDecoration(
         color: Colors.white,
         boxShadow: [
           BoxShadow(
             color: Colors.black.withOpacity(0.05),
             blurRadius: 5,
-            offset: const Offset(0, 2),
+            offset: const Offset(0, 3),
           ),
         ],
       ),
-      padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
       child: Row(
         children: [
-          // زر الرجوع
-          IconButton(
-            icon: const Icon(Icons.arrow_back),
-            onPressed: onBack,
-            tooltip: 'رجوع',
-          ),
-
-          // عنوان الكورس
+          // عنوان الكورس - تعديل لعرض أفضل
           Expanded(
-            child: Text(
-              title,
-              style: AppTextStyles.titleMedium.copyWith(
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-
-          // إذا كان الفيديو محمي بتقنية DRM، نعرض أيقونة إضافية
-          if (isDrmProtected)
-            const Tooltip(
-              message: 'فيديو محمي بتقنية DRM',
-              child: Padding(
-                padding: EdgeInsets.symmetric(horizontal: 4),
-                child: Icon(
-                  Icons.security,
-                  color: Colors.orange,
-                  size: 16,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  widget.title,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.textPrimary,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
-              ),
+                if (widget.orderNumber != null)
+                  Text(
+                    'الفيديو #${widget.orderNumber}',
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+              ],
             ),
-
-          // زر اختيار المشغل
-          PlayerSelectorWidget(
-            selectedPlayerId: selectedPlayerId,
-            onPlayerChanged: onPlayerChanged,
-            isDrmProtected: isDrmProtected,
           ),
 
-          // زر التحديث
+          // مساحة إضافية لمنع التداخل
+          const SizedBox(width: 4),
+
+          // أزرار إضافية
           IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: onRefresh,
+            onPressed: widget.onRefresh,
             tooltip: 'تحديث',
+            icon: const Icon(Icons.refresh),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+          ),
+
+          // استخدام PopupMenuButton لقائمة المشغلات
+          PopupMenuButton<String>(
+            // تغيير أيقونة القائمة عند فتحها
+            icon: _isPlayerMenuOpen
+                ? const Icon(Icons.close)
+                : Stack(
+                    children: [
+                      const Icon(Icons.video_settings),
+                      if (widget.isDrmProtected)
+                        Positioned(
+                          top: 0,
+                          right: 0,
+                          child: Container(
+                            width: 10,
+                            height: 10,
+                            decoration: const BoxDecoration(
+                              color: Colors.red,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+            tooltip: 'نوع المشغل',
+            offset: const Offset(0, 40),
+            onOpened: () {
+              setState(() {
+                _isPlayerMenuOpen = true;
+              });
+            },
+            onCanceled: () {
+              setState(() {
+                _isPlayerMenuOpen = false;
+              });
+            },
+            onSelected: (String value) {
+              widget.onPlayerChanged(value);
+              setState(() {
+                _isPlayerMenuOpen = false;
+              });
+            },
+            itemBuilder: (BuildContext context) {
+              // عرض خيارات المشغلات المتوفرة
+              return PlayerOptionsProvider.getAvailablePlayerOptions()
+                  .where((option) =>
+                      !widget.isDrmProtected ||
+                      option.supportsDrm ||
+                      option.id == 'diagnose')
+                  .map((option) {
+                return PopupMenuItem<String>(
+                  value: option.id,
+                  child: Row(
+                    children: [
+                      // إضافة علامة للعنصر المحدد حالياً
+                      if (option.id == selectedPlayerOption.id)
+                        const Icon(Icons.check,
+                            color: AppColors.buttonPrimary, size: 16)
+                      else
+                        const SizedBox(width: 16),
+                      const SizedBox(width: 8),
+                      // أيقونة المشغل
+                      Icon(
+                        option.icon,
+                        color: option.id == selectedPlayerOption.id
+                            ? AppColors.buttonPrimary
+                            : Colors.grey.shade700,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      // اسم المشغل
+                      Text(
+                        option.name,
+                        style: TextStyle(
+                          color: option.id == selectedPlayerOption.id
+                              ? AppColors.buttonPrimary
+                              : Colors.grey.shade900,
+                          fontWeight: option.id == selectedPlayerOption.id
+                              ? FontWeight.bold
+                              : FontWeight.normal,
+                        ),
+                      ),
+                      // إضافة شارة DRM إذا كان المشغل يدعمه
+                      if (option.supportsDrm) ...[
+                        const SizedBox(width: 4),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 4,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.green.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Text(
+                            'DRM',
+                            style: TextStyle(
+                              color: Colors.green,
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                );
+              }).toList();
+            },
           ),
         ],
       ),

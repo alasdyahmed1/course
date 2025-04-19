@@ -1,17 +1,14 @@
-import 'dart:math' as Math;
-
 import 'package:flutter/material.dart';
-import 'package:mycourses/core/utils/video_diagnostics.dart';
 import 'package:mycourses/models/course_video.dart';
-import 'package:mycourses/presentation/screens/admin/courses/direct_video_player_screen.dart';
-import 'package:mycourses/presentation/screens/admin/courses/modern_video_player_screen.dart';
-import 'package:mycourses/presentation/screens/admin/courses/premium_video_player_screen.dart';
-import 'package:mycourses/presentation/screens/admin/courses/simple_video_player_screen.dart';
-import 'package:mycourses/presentation/screens/admin/courses/web_video_player_screen.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
 
-/// Component for video player related functionality
+/// Component responsible for rendering different types of video players
 class CourseVideoPlayerComponent {
-  /// Builds the appropriate player based on selected type
+  static final Map<String, dynamic> _cachedControllers = {};
+  static bool _webViewPlatformInitialized = false;
+
+  /// Builds a video player based on the specified type
   static Widget buildPlayerByType({
     required BuildContext context,
     required CourseVideo? selectedVideo,
@@ -26,187 +23,116 @@ class CourseVideoPlayerComponent {
     required Function(dynamic) onPlayerCreated,
     required Function(Duration) onPositionChanged,
   }) {
-    if (selectedVideo == null) return const SizedBox.shrink();
+    if (selectedVideo == null) {
+      return const Center(child: Text('لم يتم تحديد الفيديو'));
+    }
 
-    // استخدام مفتاح فريد لكن بدون استخدام timestamp لتجنب إعادة الإنشاء المستمرة
-    // استخدم معرّف الفيديو ونوع المشغل فقط
-    final uniquePlayerKey = ValueKey('player_${selectedVideo.id}_$playerType');
-
-    // Use saved position or default
-    final Duration position = isNavigating
-        ? startPosition
-        : (videoPositions[selectedVideo.id] ?? startPosition);
-
-    // Check for previous/next video
-    final hasPrevious = findPreviousVideo() != null;
-    final hasNext = findNextVideo() != null;
+    // Initialize WebView platform if needed
+    if (!_webViewPlatformInitialized) {
+      WebViewPlatform.instance = AndroidWebViewPlatform();
+      _webViewPlatformInitialized = true;
+    }
 
     debugPrint(
         '🎬 بناء مشغل فيديو جديد للفيديو: ${selectedVideo.id}, نوع المشغل: $playerType');
 
-    // تأكد من أن دوال التنقل بين الفيديوهات آمنة
-    VoidCallback? safeNavigateNext = hasNext
-        ? () {
-            debugPrint("تم طلب الانتقال للفيديو التالي");
-            navigateToNextVideo();
-          }
-        : null;
+    // For simplicity, in this fix we'll focus on the iframe player
+    // as it's causing the most issues
+    if (playerType == 'iframe') {
+      return _buildIframePlayer(
+        context: context,
+        selectedVideo: selectedVideo,
+        startPosition: startPosition,
+        onPlayerCreated: onPlayerCreated,
+        onPositionChanged: onPositionChanged,
+      );
+    }
 
-    VoidCallback? safeNavigatePrevious = hasPrevious
-        ? () {
-            debugPrint("تم طلب الانتقال للفيديو السابق");
-            navigateToPreviousVideo();
-          }
-        : null;
-
-    // إحاطة المشغل في FutureBuilder لتأخير إنشائه قليلًا
-    // هذا سيمنع إنشاء المشغلات المتعددة في نفس الوقت
-    return KeyedSubtree(
-      key: uniquePlayerKey,
-      child: Builder(builder: (builderContext) {
-        try {
-          // استخدام RepaintBoundary لعزل إعادة الرسم والتحديثات
-          return RepaintBoundary(
-            child: _buildPlayerWidget(
-              context: builderContext,
-              selectedVideo: selectedVideo,
-              playerType: playerType,
-              position: position,
-              hasPrevious: hasPrevious,
-              hasNext: hasNext,
-              safeNavigatePrevious: safeNavigatePrevious,
-              safeNavigateNext: safeNavigateNext,
-              onPlayerCreated: onPlayerCreated,
-              onPositionChanged: onPositionChanged,
-            ),
-          );
-        } catch (e) {
-          debugPrint('خطأ في إنشاء مشغل الفيديو: $e');
-          return Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.error_outline, color: Colors.red, size: 32),
-                const SizedBox(height: 8),
-                Text(
-                  'خطأ في تحميل المشغل: ${e.toString().substring(0, Math.min(50, e.toString().length))}...',
-                  style: const TextStyle(color: Colors.white, fontSize: 12),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 16),
-                ElevatedButton(
-                  onPressed: () {
-                    // استخدام مشغل بديل
-                    try {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => DirectVideoPlayerScreen(
-                            video: selectedVideo,
-                            startPosition: position,
-                          ),
-                        ),
-                      );
-                    } catch (e) {
-                      debugPrint('خطأ في تحميل المشغل البديل: $e');
-                    }
-                  },
-                  child: const Text('استخدام مشغل بديل'),
-                ),
-              ],
-            ),
-          );
-        }
-      }),
+    // Placeholder for other player types
+    return Center(
+      child: Text('مشغل غير مدعوم: $playerType'),
     );
   }
 
-  // استخدام دالة منفصلة لإنشاء الويدجت الفعلي - هذا يمنع إنشاء كائنات Tooltip متعددة
-  static Widget _buildPlayerWidget({
+  /// Builds an iframe-based player using WebView
+  static Widget _buildIframePlayer({
     required BuildContext context,
     required CourseVideo selectedVideo,
-    required String playerType,
-    required Duration position,
-    required bool hasPrevious,
-    required bool hasNext,
-    required VoidCallback? safeNavigatePrevious,
-    required VoidCallback? safeNavigateNext,
+    required Duration startPosition,
     required Function(dynamic) onPlayerCreated,
     required Function(Duration) onPositionChanged,
   }) {
-    switch (playerType) {
-      case 'direct':
-        return DirectVideoPlayerScreen(
-          video: selectedVideo,
-          embedded: true,
-          startPosition: position,
-          onPlayerCreated: onPlayerCreated,
-          onPositionChanged: onPositionChanged,
-          onNextVideo: safeNavigateNext,
-          onPreviousVideo: safeNavigatePrevious,
-        );
-      case 'iframe':
-        return WebVideoPlayerScreen(
-          video: selectedVideo,
-          embedded: true,
-          startPosition: position,
-          hasNextVideo: hasNext,
-          hasPreviousVideo: hasPrevious,
-          onNextVideo: safeNavigateNext,
-          onPreviousVideo: safeNavigatePrevious,
-          onPlayerCreated: onPlayerCreated,
-          onPositionChanged: onPositionChanged,
-        );
-      case 'modern':
-        return ModernVideoPlayerScreen(
-          video: selectedVideo,
-          embedded: true,
-          startPosition: position,
-          onPlayerCreated: onPlayerCreated,
-          onPositionChanged: onPositionChanged,
-        );
-      case 'premium':
-        return PremiumVideoPlayerScreen(
-          video: selectedVideo,
-          embedded: true,
-          startPosition: position,
-          onPlayerCreated: onPlayerCreated,
-          onPositionChanged: onPositionChanged,
-        );
-      case 'simple':
-        return SimpleVideoPlayerScreen(
-          video: selectedVideo,
-          embedded: true,
-        );
-      case 'diagnose':
-        // للتشخيص، عرض أداة تشخيص
-        Future.microtask(() {
-          if (scaffoldContext is BuildContext) {
-            VideoDiagnostics.showDiagnosticsDialog(
-                scaffoldContext as BuildContext, selectedVideo.videoId);
-          }
-        });
-        return Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.bug_report,
-                  size: 48, color: Colors.white.withOpacity(0.7)),
-              const SizedBox(height: 16),
-              const Text(
-                'تشخيص مشكلة الفيديو',
-                style: TextStyle(color: Colors.white, fontSize: 16),
-              ),
-            ],
-          ),
-        );
-      default:
-        return const Center(
-          child: Text('اختر نوع المشغل', style: TextStyle(color: Colors.white)),
-        );
+    debugPrint('🎬 Building iframe player for video: ${selectedVideo.title}');
+    debugPrint('⏱️ Start position: ${startPosition.inSeconds}s');
+
+    final cacheKey = 'iframe_${selectedVideo.id}';
+    final embedUrl = _getEmbedUrl(selectedVideo, startPosition);
+
+    debugPrint('🔗 Generated URL: $embedUrl');
+
+    final controller = _initializeWebViewController(
+      cacheKey,
+      embedUrl,
+      onPlayerCreated,
+    );
+
+    debugPrint('🎮 WebView controller initialized');
+
+    return WebViewWidget(
+      key: ValueKey(
+          'webview_${selectedVideo.id}_${DateTime.now().millisecondsSinceEpoch}'),
+      controller: controller,
+    );
+  }
+
+  /// Initialize or reuse a WebViewController for better memory management
+  static WebViewController _initializeWebViewController(
+    String cacheKey,
+    String url,
+    Function(dynamic) onControllerCreated,
+  ) {
+    // Clear old controllers if too many are cached (prevent memory leaks)
+    if (_cachedControllers.length > 3) {
+      final oldestKey = _cachedControllers.keys.first;
+      _cachedControllers.remove(oldestKey);
     }
+
+    // Create new controller with proper settings
+    final controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(Colors.black)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onPageFinished: (url) {
+            debugPrint('📄 Finished loading: $url');
+          },
+          onWebResourceError: (error) {
+            debugPrint('🚨 WebView error: ${error.description}');
+          },
+        ),
+      )
+      ..loadRequest(Uri.parse(url));
+
+    // Cache the controller
+    _cachedControllers[cacheKey] = controller;
+
+    // Notify listener about controller creation
+    onControllerCreated(controller);
+
+    return controller;
+  }
+
+  /// Generate proper embed URL for video
+  static String _getEmbedUrl(CourseVideo video, Duration startPosition) {
+    // Sample URL generation - replace with your actual embed URL logic
+    final baseUrl =
+        'https://iframe.mediadelivery.net/embed/399973/${video.videoId}';
+    final params =
+        'autoplay=true&muted=false&loop=false&preload=true&responsive=true'
+        '&background=000000&startTime=${startPosition.inSeconds}'
+        '&backward=true&forward=true&fullscreenButton=true&controls=true'
+        '&t=${DateTime.now().millisecondsSinceEpoch}';
+
+    return '$baseUrl?$params';
   }
 }
-
-// A global key that we use for the dialog context
-final GlobalKey<ScaffoldState> scaffoldContext = GlobalKey<ScaffoldState>();

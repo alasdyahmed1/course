@@ -1,5 +1,6 @@
 import 'package:chewie/chewie.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:mycourses/core/constants/app_colors.dart';
@@ -8,6 +9,8 @@ import 'package:mycourses/core/services/bunny_storage_service.dart';
 import 'package:mycourses/core/services/course_videos_service.dart';
 import 'package:mycourses/core/services/player_preferences_service.dart';
 import 'package:mycourses/core/utils/drm_helper.dart';
+import 'package:mycourses/core/utils/logging_utils.dart';
+import 'package:mycourses/core/utils/performance_optimizer.dart';
 import 'package:mycourses/models/course.dart';
 import 'package:mycourses/models/course_section.dart';
 import 'package:mycourses/models/course_video.dart';
@@ -16,10 +19,9 @@ import 'package:mycourses/presentation/screens/admin/courses/components/course_v
 import 'package:mycourses/presentation/screens/admin/courses/components/course_video_dialog_utils.dart';
 import 'package:mycourses/presentation/screens/admin/courses/components/course_video_list_component.dart';
 import 'package:mycourses/presentation/screens/admin/courses/components/course_video_player_component.dart';
-// Import component files
 import 'package:mycourses/presentation/screens/admin/courses/components/course_video_ui_utils.dart';
 import 'package:mycourses/presentation/screens/admin/courses/file_viewer_screen.dart';
-import 'package:mycourses/presentation/widgets/course_video_header.dart';
+import 'package:mycourses/presentation/widgets/course_video_navigation_buttons.dart';
 import 'package:mycourses/presentation/widgets/custom_progress_indicator.dart';
 import 'package:pod_player/pod_player.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -44,76 +46,89 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
   Set<String> _expandedSections = {};
   String? _errorMessage;
   CourseVideo? _selectedVideo;
-  bool _isDetailsExpanded = false;
+  final bool _isDetailsExpanded = false;
 
   // UI state variables
-  final ScrollController _scrollController = ScrollController();
-  bool _isDetailsVisible =
-      true; // تغيير من _isVideoMinimized إلى _isDetailsVisible
+  final ScrollController _mainScrollController = ScrollController();
+  final Map<String, double> _scrollPositions = {};
   String _selectedPlayerType = 'iframe';
   bool _isDrmProtected = false;
   final bool _isPlayerLoading = false;
   final GlobalKey _playerKey = GlobalKey();
   bool _isVideoExpanded = false;
-  bool _showVideoDetails = false;
+  final ValueNotifier<bool> _videoDetailsNotifier = ValueNotifier<bool>(false);
 
   // Playback state variables
   Duration _currentVideoPosition = Duration.zero;
   dynamic _videoPlayerController;
-  final Map<String, Duration> _videoPositions = {};
+  final Map<String, Duration> _videoPlaybackPositions = {};
   bool _isNavigating = false;
 
-  // إضافة مؤشر لتتبع ما إذا كانت الشاشة نشطة
   bool _isActive = true;
-
-  // تعديل متغير التحكم للتعامل مع حياة المشغل
   bool _isPlayerBeingDisposed = false;
-
-  // إضافة مؤشر للتحكم في محاولات إعادة البناء
   bool _isRebuildPrevented = false;
+
+  final ValueNotifier<bool> _sectionExpandStateNotifier =
+      ValueNotifier<bool>(false);
 
   @override
   void initState() {
     super.initState();
     _isActive = true;
 
-    // إضافة مراقب لدورة حياة التطبيق لتنظيف الموارد عند تعليق التطبيق
     WidgetsBinding.instance.addObserver(this);
+
+    _initScrollController();
 
     _loadVideosAndSections();
     _loadPlayerPreference();
+  }
 
-    // تعديل آلية التمرير لإخفاء التفاصيل فقط بدلاً من تصغير الفيديو
-    _scrollController.addListener(() {
-      final shouldHideDetails = _scrollController.offset > 50;
-      if (shouldHideDetails != !_isDetailsVisible) {
-        setState(() {
-          _isDetailsVisible = !shouldHideDetails;
-        });
+  void _initScrollController() {
+    _mainScrollController.addListener(() {
+      if (!_mainScrollController.hasClients) return;
+      if (_selectedVideo != null) {
+        _checkVideoVisibility(_selectedVideo!);
       }
     });
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // تنظيف الموارد عندما يتم تعليق التطبيق
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
-      // حفظ موضع التشغيل الحالي
       _saveCurrentPlaybackPosition();
 
-      // تنظيف مشغل الفيديو للتأكد من عدم تشغيل الفيديو في الخلفية
-      if (_videoPlayerController != null && _selectedPlayerType == 'iframe') {
+      if (_videoPlayerController != null) {
         _disposeVideoController();
       }
     }
 
-    // منع إعادة البناء عند تعليق التطبيق
     if (state == AppLifecycleState.paused) {
       _isRebuildPrevented = true;
     } else if (state == AppLifecycleState.resumed) {
-      // السماح بإعادة البناء عند استئناف التطبيق
       _isRebuildPrevented = false;
+      if (mounted && _selectedVideo != null) {
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (mounted) {
+            _refreshPlayerIfNeeded();
+          }
+        });
+      }
+    }
+  }
+
+  void _refreshPlayerIfNeeded() {
+    if (_isPlayerBeingDisposed || !mounted || _selectedVideo == null) return;
+
+    // Only refresh iframe players as they cause most issues
+    if (_selectedPlayerType == 'iframe' && _videoPlayerController != null) {
+      _saveCurrentPlaybackPosition();
+      _disposeVideoController();
+
+      setState(() {
+        _videoPlayerController = null;
+      });
     }
   }
 
@@ -121,38 +136,23 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
   void dispose() {
     _isActive = false;
 
-    // إزالة مراقب دورة حياة التطبيق
     WidgetsBinding.instance.removeObserver(this);
 
-    // تنظيف موارد الشاشة بشكل صحيح
     try {
-      // إلغاء المستمعين لتجنب مشاكل دورة الحياة
-      _scrollController.removeListener(_handleScroll);
-      _scrollController.dispose();
+      _mainScrollController.dispose();
 
-      // تنظيف مشغل الفيديو الحالي
       _disposeVideoController();
 
-      // إعادة توجيه الشاشة للوضع العمودي
       SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
           overlays: SystemUiOverlay.values);
     } catch (e) {
       debugPrint('خطأ أثناء تنظيف الموارد: $e');
     }
+    _videoDetailsNotifier.dispose();
     super.dispose();
   }
 
-  void _handleScroll() {
-    final shouldMinimize = _scrollController.offset > 50;
-    if (shouldMinimize != _isDetailsVisible) {
-      setState(() {
-        _isDetailsVisible = shouldMinimize;
-      });
-    }
-  }
-
-  // دالة منفصلة للتخلص من مشغل الفيديو
   void _disposeVideoController() {
     try {
       if (_videoPlayerController != null && !_isPlayerBeingDisposed) {
@@ -172,9 +172,7 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
             _isPlayerBeingDisposed = false;
           });
         } else if (_videoPlayerController is WebViewController) {
-          // الطريقة الصحيحة لتنظيف WebViewController
           try {
-            // محاولة تحميل صفحة فارغة لوقف JavaScript
             (_videoPlayerController as WebViewController)
                 .loadRequest(Uri.parse('about:blank'))
                 .then((_) {
@@ -187,7 +185,6 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
               _isPlayerBeingDisposed = false;
             });
           } catch (e) {
-            // التعامل مع الأخطاء في WebViewController
             debugPrint('⚠️ خطأ عند تنظيف WebViewController: $e');
             _videoPlayerController = null;
             _isPlayerBeingDisposed = false;
@@ -202,7 +199,6 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
             _isPlayerBeingDisposed = false;
           });
         } else {
-          // نوع غير معروف، فقط حرر المرجع
           _videoPlayerController = null;
           _isPlayerBeingDisposed = false;
         }
@@ -214,13 +210,19 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
     }
   }
 
-  // تحسين دالة تحميل الفيديوهات والأقسام لتجنب أخطاء التجديد
   Future<void> _loadVideosAndSections() async {
-    // التحقق من أن الشاشة لا تزال نشطة
-    if (!_isActive || !mounted) return;
+    _scrollPositions.clear();
+    debugPrint('📚 Loading videos and sections...');
+
+    if (!_isActive || !mounted) {
+      debugPrint('⚠️ Component not active or mounted');
+      return;
+    }
 
     try {
-      // تحديث حالة التحميل
+      final String? currentVideoId = _selectedVideo?.id;
+      debugPrint('💾 Current selected video ID: $currentVideoId');
+
       if (mounted) {
         setState(() {
           _isLoading = true;
@@ -228,11 +230,9 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
         });
       }
 
-      // حفظ الفيديو المحدد الحالي ومواقع التشغيل
-      final String? currentSelectedVideoId = _selectedVideo?.id;
-      final Map<String, Duration> savedPositions = Map.from(_videoPositions);
+      final Map<String, Duration> savedPositions =
+          Map.from(_videoPlaybackPositions);
 
-      // تفريغ المتغيرات قبل تحميل البيانات الجديدة
       _disposeVideoController();
       if (mounted) {
         setState(() {
@@ -240,46 +240,71 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
         });
       }
 
-      // تنفيذ طلبات API بالتوازي
       final sectionsData =
           CourseVideosService.getCourseSections(widget.course.id);
       final videosData = CourseVideosService.getCourseVideos(widget.course.id);
 
-      // انتظار نتائج الطلبات
       final results = await Future.wait([sectionsData, videosData]);
 
-      // التحقق مرة أخرى من أن الشاشة لا تزال نشطة
       if (!_isActive || !mounted) return;
 
-      // تحليل النتائج
       final sections = results[0] as List<CourseSection>;
       final videos = results[1] as List<CourseVideo>;
 
-      // ترتيب الفيديوهات حسب الترتيب (order_number)
+      sections.sort((a, b) => a.orderNumber.compareTo(b.orderNumber));
+
       videos.sort((a, b) {
-        // إذا كان لديهما نفس القسم، رتب حسب الترتيب
         if (a.sectionId == b.sectionId) {
           return a.orderNumber.compareTo(b.orderNumber);
         }
-        // إذا كان القسم مختلف، رتب حسب القسم ثم حسب الترتيب
+
         if (a.sectionId != null && b.sectionId != null) {
-          final sectionCompare = a.sectionId!.compareTo(b.sectionId!);
-          if (sectionCompare != 0) return sectionCompare;
+          int sectionOrderA = sections
+              .firstWhere((s) => s.id == a.sectionId,
+                  orElse: () => CourseSection(
+                      id: '',
+                      courseId: '',
+                      title: '',
+                      orderNumber: 999,
+                      isPublished: true,
+                      createdAt: DateTime.now(),
+                      updatedAt: DateTime.now()))
+              .orderNumber;
+
+          int sectionOrderB = sections
+              .firstWhere((s) => s.id == b.sectionId,
+                  orElse: () => CourseSection(
+                      id: '',
+                      courseId: '',
+                      title: '',
+                      orderNumber: 999,
+                      isPublished: true,
+                      createdAt: DateTime.now(),
+                      updatedAt: DateTime.now()))
+              .orderNumber;
+
+          if (sectionOrderA != sectionOrderB) {
+            return sectionOrderA.compareTo(sectionOrderB);
+          }
         }
-        // رتب حسب الترتيب إذا كان القسم مختلف
+
+        if (a.sectionId == null && b.sectionId != null) {
+          return 1;
+        }
+        if (a.sectionId != null && b.sectionId == null) {
+          return -1;
+        }
+
         return a.orderNumber.compareTo(b.orderNumber);
       });
 
-      // تصنيف الفيديوهات حسب القسم
       final videosBySection = <String, List<CourseVideo>>{};
       final uncategorizedVideos = <CourseVideo>[];
 
-      // تهيئة قوائم فارغة لجميع الأقسام
       for (var section in sections) {
         videosBySection[section.id] = [];
       }
 
-      // تصنيف الفيديوهات
       for (var video in videos) {
         if (video.sectionId != null &&
             video.sectionId!.isNotEmpty &&
@@ -290,27 +315,22 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
         }
       }
 
-      // ترتيب الفيديوهات داخل كل قسم حسب الترتيب (order_number)
       for (var sectionId in videosBySection.keys) {
         videosBySection[sectionId]!.sort((a, b) {
           return a.orderNumber.compareTo(b.orderNumber);
         });
       }
 
-      // ترتيب الفيديوهات غير المصنفة حسب الترتيب (order_number)
       uncategorizedVideos.sort((a, b) {
         return a.orderNumber.compareTo(b.orderNumber);
       });
 
-      // توسيع جميع الأقسام افتراضيًا
       final expandedSections = sections.map((s) => s.id).toSet();
       expandedSections.add('uncategorized');
 
-      // استعادة مواقع التشغيل المحفوظة
-      _videoPositions.clear();
-      _videoPositions.addAll(savedPositions);
+      _videoPlaybackPositions.clear();
+      _videoPlaybackPositions.addAll(savedPositions);
 
-      // Count videos per section
       final Map<String, int> sectionVideoCounts = {};
       for (var video in videos) {
         if (video.sectionId != null && video.sectionId!.isNotEmpty) {
@@ -319,42 +339,51 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
         }
       }
 
-      // Update each section with its video count
       for (var section in sections) {
         section.videoCount = sectionVideoCounts[section.id] ?? 0;
       }
 
-      // تحديث الحالة
+      final allVideosOrdered = <CourseVideo>[];
+
+      for (var section in sections) {
+        final sectionVideos = videosBySection[section.id] ?? [];
+        allVideosOrdered.addAll(sectionVideos);
+      }
+
+      allVideosOrdered.addAll(uncategorizedVideos);
+
       if (mounted) {
+        debugPrint('🔄 Updating state with loaded data');
+        debugPrint('   - Videos count: ${allVideosOrdered.length}');
+        debugPrint('   - Sections count: ${sections.length}');
+
         setState(() {
           _sections = sections;
-          _videos = videos;
+          _videos = allVideosOrdered;
           _videosBySection = videosBySection;
           _uncategorizedVideos = uncategorizedVideos;
           _expandedSections = expandedSections;
           _isLoading = false;
 
-          // استعادة اختيار الفيديو السابق أو اختيار الأول
-          if (videos.isNotEmpty) {
-            if (currentSelectedVideoId != null) {
+          if (allVideosOrdered.isNotEmpty) {
+            if (currentVideoId != null) {
               final videoIndex =
-                  videos.indexWhere((v) => v.id == currentSelectedVideoId);
+                  allVideosOrdered.indexWhere((v) => v.id == currentVideoId);
+              debugPrint('🎯 Found previous video at index: $videoIndex');
               if (videoIndex >= 0) {
-                _selectedVideo = videos[videoIndex];
+                _selectedVideo = allVideosOrdered[videoIndex];
               } else {
-                // دائمًا اختر الفيديو الأول بدلاً من الأخير
-                _selectedVideo = videos.first;
+                _selectedVideo = allVideosOrdered.first;
               }
             } else {
-              // دائمًا اختر الفيديو الأول بدلاً من الأخير
-              _selectedVideo = videos.first;
+              _selectedVideo = allVideosOrdered.first;
             }
+            debugPrint('✅ Selected video set to: ${_selectedVideo?.title}');
           }
         });
       }
     } catch (e) {
-      // معالجة الأخطاء بشكل أفضل
-      debugPrint('خطأ في تحميل الفيديوهات والأقسام: $e');
+      debugPrint('❌ Error loading data: $e');
       if (!_isActive || !mounted) return;
 
       setState(() {
@@ -364,26 +393,37 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
     }
   }
 
-  // Section handling
   void _toggleSection(String sectionId) {
-    setState(() {
-      if (_expandedSections.contains(sectionId)) {
-        _expandedSections.remove(sectionId);
-      } else {
-        _expandedSections.add(sectionId);
-      }
-    });
+    _expandedSections = Set<String>.from(_expandedSections);
+
+    if (_expandedSections.contains(sectionId)) {
+      _expandedSections.remove(sectionId);
+    } else {
+      _expandedSections.add(sectionId);
+    }
+
+    _sectionExpandStateNotifier.value = !_sectionExpandStateNotifier.value;
   }
 
-  // Keep this implementation of _playVideoInline but make it safer
   void _playVideoInline(CourseVideo video,
       {bool resetPosition = false, bool preserveFullscreen = false}) {
-    if (!_isActive || !mounted || _isRebuildPrevented) return;
+    debugPrint(
+        '🎥 _playVideoInline called for video: ${video.title} (${video.id})');
 
-    // منع تغيير الفيديو أثناء تنظيف مشغل آخر
+    if (!_isActive || !mounted || _isRebuildPrevented) {
+      debugPrint(
+          '⚠️ Early return: isActive=$_isActive, mounted=$mounted, isRebuildPrevented=$_isRebuildPrevented');
+      return;
+    }
+
+    // منع التحميل المتكرر للفيديو نفسه
+    if (_selectedVideo?.id == video.id && !resetPosition) {
+      debugPrint('🔄 Same video selected, only scrolling to position');
+      _scrollToSelectedVideo(video);
+      return;
+    }
+
     if (_isPlayerBeingDisposed) {
-      debugPrint('⏳ انتظار انتهاء عملية تنظيف المشغل الحالي...');
-      // استخدام مؤقت واحد فقط لتجنب تكرار الطلبات
       Future.delayed(const Duration(milliseconds: 300), () {
         if (_isActive && mounted && !_isRebuildPrevented) {
           _playVideoInline(video,
@@ -394,65 +434,134 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
       return;
     }
 
-    // تجنب إعادة تحميل نفس الفيديو الذي يتم عرضه حاليًا
-    if (_selectedVideo != null &&
-        _selectedVideo!.id == video.id &&
-        !resetPosition) {
-      debugPrint(
-          '🔄 الفيديو ${video.id} قيد التشغيل بالفعل، تجاهل طلب إعادة التحميل');
-      return;
-    }
-
-    // تفريغ المشغل الحالي قبل تغيير الفيديو
-    // حفظ موضع التشغيل الحالي قبل تغيير الفيديو
-    if (_selectedVideo != null && _selectedVideo!.id != video.id) {
+    if (_selectedVideo != null) {
       _saveCurrentPlaybackPosition();
     }
 
-    // Save current state
     final wasFullScreen = preserveFullscreen ||
         (_videoPlayerController is ChewieController &&
             (_videoPlayerController as ChewieController).isFullScreen);
 
-    // تفريغ المشغل الحالي قبل تغيير الفيديو
-    final oldController = _videoPlayerController;
-    _videoPlayerController = null;
+    debugPrint(
+        '📍 Current scroll position: ${_mainScrollController.position.pixels}');
 
     setState(() {
+      debugPrint('🔄 Updating state: selectedVideo=${video.title}');
       _selectedVideo = video;
-      _isDetailsExpanded = false;
-      _showVideoDetails = false;
+      _videoDetailsNotifier.value = false;
       _isNavigating = true;
-      if (resetPosition) {
-        _currentVideoPosition = Duration.zero;
-      } else {
-        _currentVideoPosition = _videoPositions[video.id] ?? Duration.zero;
-      }
+      _currentVideoPosition = resetPosition
+          ? Duration.zero
+          : (_videoPlaybackPositions[video.id] ?? Duration.zero);
     });
 
-    // Clean up old controller after state update
+    // تأخير قصير قبل التمرير للسماح للواجهة بالتحديث
+    Future.delayed(const Duration(milliseconds: 50), () {
+      _scrollToSelectedVideo(video);
+    });
+
+    final oldController = _videoPlayerController;
+
     _disposeVideoControllerSafely(oldController);
+    _videoPlayerController = null;
 
-    // Finish navigation after a short delay
-    Future.delayed(const Duration(milliseconds: 100), () {
-      if (mounted) {
-        setState(() {
-          _isNavigating = false;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+
+      setState(() {
+        _isNavigating = false;
+      });
+
+      if (wasFullScreen) {
+        Future.delayed(const Duration(milliseconds: 300), () {
+          if (_videoPlayerController is ChewieController && mounted) {
+            (_videoPlayerController as ChewieController).enterFullScreen();
+          }
         });
-
-        // If we need to restore fullscreen state, do it after the player is initialized
-        if (wasFullScreen) {
-          Future.delayed(const Duration(milliseconds: 500), () {
-            if (_videoPlayerController is ChewieController && mounted) {
-              (_videoPlayerController as ChewieController).enterFullScreen();
-            }
-          });
-        }
       }
     });
   }
 
-  // Video player functions
+  void _scrollToSelectedVideo(CourseVideo video) {
+    if (!mounted || !_mainScrollController.hasClients) return;
+
+    debugPrint('📜 Attempting to scroll to video: ${video.title}');
+
+    try {
+      // First try using cached position
+      final cachedPosition = _scrollPositions[video.id];
+      if (cachedPosition != null) {
+        _mainScrollController.animateTo(
+          cachedPosition,
+          duration: const Duration(milliseconds: 500),
+          curve: Curves.easeOutCubic,
+        );
+        return;
+      }
+
+      // If no cached position, calculate from widget
+      SchedulerBinding.instance.addPostFrameCallback((_) async {
+        if (!mounted) return;
+
+        final videoKey = GlobalObjectKey('video_item_${video.id}');
+        final videoContext = videoKey.currentContext;
+
+        if (videoContext == null) {
+          debugPrint('⚠️ Video context not found, retrying in 300ms');
+          Future.delayed(const Duration(milliseconds: 300), () {
+            if (mounted) _scrollToSelectedVideo(video);
+          });
+          return;
+        }
+
+        final box = videoContext.findRenderObject() as RenderBox;
+        final position = box.localToGlobal(Offset.zero);
+
+        final viewportHeight = MediaQuery.of(context).size.height;
+        final videoHeight = box.size.height;
+
+        double targetPosition =
+            position.dy - (viewportHeight - videoHeight) / 3;
+        targetPosition = targetPosition.clamp(
+            0.0, _mainScrollController.position.maxScrollExtent);
+
+        // Cache the calculated position
+        _scrollPositions[video.id] = targetPosition;
+
+        if (mounted) {
+          await _mainScrollController.animateTo(
+            targetPosition,
+            duration: const Duration(milliseconds: 500),
+            curve: Curves.easeOutCubic,
+          );
+        }
+      });
+    } catch (e) {
+      debugPrint('❌ Error during scroll calculation: $e');
+    }
+  }
+
+  void _checkVideoVisibility(CourseVideo video) {
+    if (!mounted || !_mainScrollController.hasClients) return;
+
+    try {
+      final videoKey = GlobalObjectKey('video_item_${video.id}');
+      final videoContext = videoKey.currentContext;
+
+      if (videoContext != null) {
+        final box = videoContext.findRenderObject() as RenderBox;
+        final position = box.localToGlobal(Offset.zero);
+
+        final viewportHeight = MediaQuery.of(context).size.height;
+        if (position.dy < 0 || position.dy > viewportHeight) {
+          _scrollToSelectedVideo(video);
+        }
+      }
+    } catch (e) {
+      debugPrint('❌ Error checking visibility: $e');
+    }
+  }
+
   void _playVideo(CourseVideo video) {
     CourseVideoDialogUtils.showLoadingDialog(
         context, 'جاري التحقق من خيارات التشغيل...');
@@ -462,12 +571,10 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
         _isDrmProtected = isDrmProtected;
       });
 
-      // تحديث نوع المشغل تلقائيًا للفيديوهات المحمية إذا كان المشغل الحالي لا يدعم DRM
       if (isDrmProtected) {
         final currentOption =
             PlayerOptionsProvider.getPlayerOptionById(_selectedPlayerType);
         if (!currentOption.supportsDrm) {
-          // تبديل للمشغل الافتراضي الذي يدعم DRM
           final drmPlayers = PlayerOptionsProvider.getAvailablePlayerOptions()
               .where((option) => option.supportsDrm)
               .toList();
@@ -486,7 +593,6 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
     });
   }
 
-  // تحسين حفظ موقع التشغيل للتأكد من حفظها بشكل صحيح
   void _saveCurrentPlaybackPosition() {
     try {
       if (_selectedVideo != null) {
@@ -494,7 +600,7 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
         if (position.inSeconds > 0) {
           debugPrint(
               '💾 حفظ موقع التشغيل لفيديو ${_selectedVideo!.id}: ${position.inSeconds} ثانية');
-          _videoPositions[_selectedVideo!.id] = position;
+          _videoPlaybackPositions[_selectedVideo!.id] = position;
         }
       }
     } catch (e) {
@@ -514,7 +620,6 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
           return chewieController.videoPlayerController.value.position;
         } else if (_videoPlayerController is Player) {
           final playerController = _videoPlayerController as Player;
-          // Fix for Player class - use the position property instead of getCurrentPosition
           return playerController.state.position;
         }
       }
@@ -524,7 +629,6 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
     }
   }
 
-  // Navigation functions
   CourseVideo? _findPreviousVideo() {
     if (_selectedVideo == null || _videos.isEmpty) return null;
 
@@ -538,7 +642,8 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
     if (_selectedVideo == null || _videos.isEmpty) return null;
 
     final currentIndex = _videos.indexWhere((v) => v.id == _selectedVideo!.id);
-    if (currentIndex == -1 || currentIndex >= _videos.length - 1) return null;
+
+    if (currentIndex < 0 || currentIndex >= _videos.length - 1) return null;
 
     return _videos[currentIndex + 1];
   }
@@ -546,42 +651,25 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
   void _navigateToPreviousVideo() {
     final previousVideo = _findPreviousVideo();
     if (previousVideo != null) {
-      // Save current fullscreen state before switching videos
       final wasFullScreen = _videoPlayerController is ChewieController &&
           (_videoPlayerController as ChewieController).isFullScreen;
 
-      // Save current position
       _saveCurrentPlaybackPosition();
-
-      // Switch videos with a small delay to allow UI to update
-      Future.delayed(const Duration(milliseconds: 50), () {
-        if (mounted) {
-          _playVideoInline(previousVideo, preserveFullscreen: wasFullScreen);
-        }
-      });
+      _playVideoInline(previousVideo, preserveFullscreen: wasFullScreen);
     }
   }
 
   void _navigateToNextVideo() {
     final nextVideo = _findNextVideo();
     if (nextVideo != null) {
-      // Save current fullscreen state before switching videos
       final wasFullScreen = _videoPlayerController is ChewieController &&
           (_videoPlayerController as ChewieController).isFullScreen;
 
-      // Save current position
       _saveCurrentPlaybackPosition();
-
-      // Switch videos with a small delay to allow UI to update
-      Future.delayed(const Duration(milliseconds: 50), () {
-        if (mounted) {
-          _playVideoInline(nextVideo, preserveFullscreen: wasFullScreen);
-        }
-      });
+      _playVideoInline(nextVideo, preserveFullscreen: wasFullScreen);
     }
   }
 
-  // Screen orientation and video expansion
   void _expandVideo(CourseVideo video) {
     if (_selectedVideo == null) return;
 
@@ -602,7 +690,6 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
     }
   }
 
-  // CRUD operations
   Future<void> _addNewVideo() async {
     final result = await Navigator.push(
       context,
@@ -661,7 +748,6 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
     }
   }
 
-  // File attachment handling
   Future<void> _deleteAttachment(CourseFile file) async {
     final confirmed =
         await CourseVideoDialogUtils.showFileDeleteConfirmationDialog(
@@ -723,74 +809,46 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
     );
   }
 
-  // UI component builders using our new component classes
   Widget _buildPlayerByType({Duration startFrom = Duration.zero}) {
-    // استخدم الموقع المحفوظ إذا كان المشغل قد تم تصغيره سابقاً
     Duration position = startFrom;
-    // إذا كان هناك فيديو محدد، استخدم الموقع المحفوظ له
     if (_selectedVideo != null &&
-        _videoPositions.containsKey(_selectedVideo!.id)) {
-      position = _videoPositions[_selectedVideo!.id]!;
+        _videoPlaybackPositions.containsKey(_selectedVideo!.id)) {
+      position = _videoPlaybackPositions[_selectedVideo!.id]!;
       debugPrint(
           '🎬 استئناف الفيديو ${_selectedVideo!.id} من الموقع: ${position.inSeconds}s');
     }
 
-    // استخدام مفتاح ثابت لمنع إعادة الإنشاء المستمرة
-    final playerKey =
-        ValueKey('player_${_selectedVideo?.id ?? 'none'}_$_selectedPlayerType');
-
-    return KeyedSubtree(
-      key: playerKey,
-      child: CourseVideoPlayerComponent.buildPlayerByType(
-        context: context, // تمرير السياق للتأكد من وجود سياق صحيح
-        selectedVideo: _selectedVideo,
-        playerType: _selectedPlayerType,
-        startPosition: position,
-        isNavigating: _isNavigating,
-        videoPositions: _videoPositions,
-        findPreviousVideo: _findPreviousVideo,
-        findNextVideo: _findNextVideo,
-        navigateToPreviousVideo: _navigateToPreviousVideo,
-        navigateToNextVideo: _navigateToNextVideo,
-        onPlayerCreated: (controller) {
-          if (_isActive && mounted && !_isPlayerBeingDisposed) {
-            setState(() {
-              _videoPlayerController = controller;
-            });
-          }
-        },
-        onPositionChanged: (position) {
-          _currentVideoPosition = position;
-          // عدم استدعاء setState هنا لتجنب الأخطاء
-        },
-      ),
-    );
-  }
-
-  Widget _buildCollapsibleVideoDetails() {
-    return CourseVideoDetailComponent.buildCollapsibleVideoDetails(
+    return CourseVideoPlayerComponent.buildPlayerByType(
+      context: context,
       selectedVideo: _selectedVideo,
-      showVideoDetails: _showVideoDetails,
-      onToggleDetails: (value) {
-        setState(() {
-          _showVideoDetails = value;
-        });
-        // لا نقوم بأي تمرير تلقائي عند تبديل حالة التفاصيل
+      playerType: _selectedPlayerType,
+      startPosition: position,
+      isNavigating: _isNavigating,
+      videoPositions: _videoPlaybackPositions,
+      findPreviousVideo: _findPreviousVideo,
+      findNextVideo: _findNextVideo,
+      navigateToPreviousVideo: _navigateToPreviousVideo,
+      navigateToNextVideo: _navigateToNextVideo,
+      onPlayerCreated: (controller) {
+        if (_isActive &&
+            mounted &&
+            !_isPlayerBeingDisposed &&
+            _videoPlayerController != controller) {
+          setState(() {
+            _videoPlayerController = controller;
+          });
+        }
       },
-      onPlayVideo: _playVideo,
-      onEditVideo: _editVideo,
-      onDeleteVideo: _deleteVideo,
-      onOpenAttachment: _openAttachment,
-      onDeleteAttachment: _deleteAttachment,
+      onPositionChanged: (position) {
+        if ((_currentVideoPosition.inSeconds - position.inSeconds).abs() > 1) {
+          _currentVideoPosition = position;
+        }
+      },
     );
   }
 
   Widget _buildEmbeddedPlayer() {
     if (_selectedVideo == null) return const SizedBox.shrink();
-
-    // التحقق من وجود فيديو سابق/تالي
-    final hasPrevious = _findPreviousVideo() != null;
-    final hasNext = _findNextVideo() != null;
 
     if (_isVideoExpanded) {
       return Container(
@@ -803,21 +861,16 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
       );
     }
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // مشغل الفيديو (يظل ظاهراً دائماً)
-        Stack(
-          children: [
-            AspectRatio(
+    return SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          RepaintBoundary(
+            child: AspectRatio(
               aspectRatio: 16 / 9,
-              child: Container(
-                key: _playerKey,
-                decoration: BoxDecoration(
-                  color: Colors.black,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                clipBehavior: Clip.antiAlias,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(13),
                 child: Stack(
                   children: [
                     _buildPlayerByType(startFrom: _currentVideoPosition),
@@ -829,26 +882,142 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
                 ),
               ),
             ),
-          ],
-        ),
-
-        // تفاصيل الفيديو (تظهر فقط إذا كان _isDetailsVisible هو true)
-        if (_isDetailsVisible) _buildCollapsibleVideoDetails(),
-      ],
+          ),
+          _buildVideoHeader(),
+          ValueListenableBuilder<bool>(
+            valueListenable: _videoDetailsNotifier,
+            builder: (context, isExpanded, _) {
+              return AnimatedSwitcher(
+                duration: const Duration(milliseconds: 300),
+                child: isExpanded
+                    ? CourseVideoDetailComponent.buildCollapsibleVideoDetails(
+                        key: ValueKey<String>('details_${_selectedVideo!.id}'),
+                        selectedVideo: _selectedVideo,
+                        showVideoDetails: true,
+                        onToggleDetails: (_) {},
+                        onPlayVideo: _playVideo,
+                        onEditVideo: _editVideo,
+                        onDeleteVideo: _deleteVideo,
+                        onOpenAttachment: _openAttachment,
+                        onDeleteAttachment: _deleteAttachment,
+                      )
+                    : const SizedBox.shrink(),
+              );
+            },
+          ),
+        ],
+      ),
     );
   }
 
-  double _calculateProgressPercentage() {
-    if (_selectedVideo == null) return 0.0;
-    final currentSeconds = _currentVideoPosition.inSeconds;
-    final totalSeconds = _selectedVideo!.duration;
-    if (totalSeconds <= 0) return 0.0;
-
-    final progress = currentSeconds / totalSeconds;
-    return progress.clamp(0.0, 1.0);
+  Widget _buildVideoHeader() {
+    return ValueListenableBuilder<bool>(
+      valueListenable: _videoDetailsNotifier,
+      builder: (context, isExpanded, _) {
+        return InkWell(
+          onTap: _handleToggleDetails,
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 16),
+            child: Row(
+              children: [
+                Container(
+                  width: 18,
+                  height: 18,
+                  decoration: BoxDecoration(
+                    color: AppColors.buttonPrimary,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Center(
+                    child: Text(
+                      _selectedVideo!.orderNumber.toString(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _selectedVideo!.title,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 11,
+                      color: AppColors.buttonPrimary,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: AppColors.buttonPrimary.withOpacity(0.15),
+                      width: 0.5,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.access_time,
+                        size: 8,
+                        color: AppColors.buttonPrimary.withOpacity(0.7),
+                      ),
+                      const SizedBox(width: 3),
+                      Text(
+                        _selectedVideo!.formattedDuration,
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 8,
+                          color: AppColors.buttonPrimary.withOpacity(0.8),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Container(
+                  width: 18,
+                  height: 18,
+                  decoration: BoxDecoration(
+                    color: isExpanded
+                        ? AppColors.buttonSecondary.withOpacity(0.1)
+                        : Colors.transparent,
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: AppColors.buttonSecondary.withOpacity(0.2),
+                      width: 0.5,
+                    ),
+                  ),
+                  child: Center(
+                    child: Icon(
+                      isExpanded
+                          ? Icons.keyboard_arrow_up
+                          : Icons.keyboard_arrow_down,
+                      color: AppColors.buttonSecondary,
+                      size: 14,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
-  // إضافة دالة لتحميل تفضيل المشغل المخزن
+  void _handleToggleDetails() {
+    _videoDetailsNotifier.value = !_videoDetailsNotifier.value;
+  }
+
   Future<void> _loadPlayerPreference() async {
     final savedType = await PlayerPreferencesService.getPlayerType();
     setState(() {
@@ -856,24 +1025,19 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
     });
   }
 
-  // تحسين دالة تغيير المشغل لمنع الأخطاء أثناء التحديث
   Future<void> _changePlayerType(String playerType) async {
     if (!mounted || _isPlayerBeingDisposed || _isRebuildPrevented) return;
-    // منع تغيير المشغل إذا كان هو نفس النوع المختار حالياً
     if (_selectedPlayerType == playerType) return;
 
     debugPrint('🔄 تغيير نوع المشغل من $_selectedPlayerType إلى $playerType');
 
-    // استخدم حارس بوابة للتأكد من أن تغيير واحد فقط يحدث في وقت واحد
     if (_isPlayerBeingDisposed) {
       debugPrint('⏳ انتظار انتهاء عملية التنظيف الحالية...');
       return;
     }
 
-    // حفظ موضع التشغيل الحالي قبل تغيير المشغل
     _saveCurrentPlaybackPosition();
 
-    // تنظيف المشغل الحالي
     final oldController = _videoPlayerController;
     _videoPlayerController = null;
 
@@ -883,12 +1047,9 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
       });
     }
 
-    // حفظ تفضيل المشغل
     await PlayerPreferencesService.savePlayerType(playerType);
 
-    // تنظيف المشغل السابق بعد تغيير النوع بتأخير
     Future.delayed(const Duration(milliseconds: 300), () {
-      // إضافة الفحص هنا
       if (!_isActive || !mounted) return;
       try {
         if (oldController != null) {
@@ -910,15 +1071,24 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
     });
   }
 
-  // تحسين زر التحديث لتجنب الأخطاء
+  /// تحديث قائمة الفيديوهات مع الحفاظ على حالة التشغيل الحالية
   Future<void> _refreshVideos() async {
-    if (_isLoading || !_isActive || !mounted || _isPlayerBeingDisposed) return;
+    debugPrint('🔄 بدء تحديث قائمة الفيديوهات...');
 
-    // حفظ موضع التشغيل الحالي
+    if (_isLoading || !_isActive || !mounted || _isPlayerBeingDisposed) {
+      debugPrint(
+          '⚠️ لا يمكن التحديث: isLoading=$_isLoading, isActive=$_isActive, mounted=$mounted');
+      return;
+    }
+
+    // حفظ موقع التشغيل الحالي قبل التحديث
     _saveCurrentPlaybackPosition();
+    final String? currentVideoId = _selectedVideo?.id;
+    debugPrint('💾 تم حفظ موقع التشغيل للفيديو: $currentVideoId');
 
-    // تنظيف المشغل الحالي قبل التحديث
+    // تنظيف المشغل الحالي
     _disposeVideoController();
+
     if (mounted) {
       setState(() {
         _videoPlayerController = null;
@@ -927,86 +1097,129 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
       });
     }
 
-    // انتظار تنظيف الواجهة
+    // تأخير بسيط للسماح بتنظيف الموارد
     await Future.delayed(const Duration(milliseconds: 150));
 
-    // بدء تحميل البيانات الجديدة
+    // إعادة تحميل البيانات
     await _loadVideosAndSections();
+
+    // التأكد من عدم فقدان موقع التمرير
+    if (currentVideoId != null && mounted) {
+      debugPrint('🎯 محاولة العودة للفيديو السابق: $currentVideoId');
+      final videoIndex = _videos.indexWhere((v) => v.id == currentVideoId);
+      if (videoIndex >= 0) {
+        debugPrint('✅ تم العثور على الفيديو السابق في الموقع: $videoIndex');
+        _scrollToSelectedVideo(_videos[videoIndex]);
+      }
+    }
   }
 
-  // Helper method for safely disposing controllers
+  /// التنظيف الآمن لمشغل الفيديو
   void _disposeVideoControllerSafely(dynamic controller) {
+    debugPrint('🧹 تنظيف آمن لمشغل الفيديو: ${controller.runtimeType}');
+
     if (controller == null) return;
+
     Future.delayed(const Duration(milliseconds: 100), () {
       try {
         if (controller is VideoPlayerController) {
           controller.pause().then((_) {
             controller.dispose();
+            debugPrint('✅ تم تنظيف VideoPlayerController');
           }).catchError((e) {
-            debugPrint('⚠️ Error disposing VideoPlayerController: $e');
+            debugPrint('⚠️ خطأ في تنظيف VideoPlayerController: $e');
           });
         } else if (controller is ChewieController) {
           controller.dispose();
+          debugPrint('✅ تم تنظيف ChewieController');
         } else if (controller is Player) {
           controller.dispose().catchError((e) {
-            debugPrint('⚠️ Error disposing Player: $e');
+            debugPrint('⚠️ خطأ في تنظيف Player: $e');
           });
         }
       } catch (e) {
-        debugPrint('⚠️ Error disposing controller: $e');
+        debugPrint('⚠️ خطأ في تنظيف المشغل: $e');
       }
     });
   }
 
-  // إضافة دالة إعادة ترتيب الفيديوهات
   Future<void> _handleReorderVideo(
       CourseVideo video, int newIndex, String? sectionId) async {
+    DialogRoute? loadingDialog;
+
     try {
-      // تحديد القائمة المستهدفة
-      List<CourseVideo> targetList;
-      if (sectionId != null) {
-        targetList = _videosBySection[sectionId] ?? [];
-      } else {
-        targetList = _uncategorizedVideos;
-      }
+      loadingDialog = DialogRoute<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          content: SizedBox(
+            width: 300,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(color: AppColors.buttonPrimary),
+                const SizedBox(width: 20),
+                const Flexible(
+                  child: Text('جاري إعادة ترتيب الفيديوهات...'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
 
-      // حساب الترتيب الجديد
-      int newOrderNumber;
-      if (newIndex == 0) {
-        // إذا كان في بداية القائمة
-        newOrderNumber =
-            targetList.isEmpty ? 1 : targetList.first.orderNumber - 1;
-        // منع الأرقام السالبة
-        newOrderNumber = newOrderNumber <= 0 ? 1 : newOrderNumber;
-      } else if (newIndex >= targetList.length) {
-        // إذا كان في نهاية القائمة
-        newOrderNumber =
-            targetList.isEmpty ? 1 : targetList.last.orderNumber + 1;
-      } else {
-        // إذا كان في وسط القائمة
-        if (newIndex + 1 < targetList.length) {
-          newOrderNumber = (targetList[newIndex].orderNumber +
-                  targetList[newIndex + 1].orderNumber) ~/
-              2;
-        } else {
-          newOrderNumber = targetList[newIndex].orderNumber + 1;
-        }
-      }
+      Navigator.of(context).push(loadingDialog);
 
-      setState(() {
-        _isLoading = true;
-      });
+      LoggingUtils.debugLog('🔄 Processing video reorder request:');
+      LoggingUtils.debugLog('  - Video: ${video.title} (${video.id})');
+      LoggingUtils.debugLog(
+          '  - From Section: ${video.sectionId ?? "uncategorized"}');
+      LoggingUtils.debugLog('  - To Section: ${sectionId ?? "uncategorized"}');
+      LoggingUtils.debugLog('  - To Position: $newIndex');
 
-      // تحديث الترتيب في قاعدة البيانات
-      await CourseVideosService.updateVideoOrder(
-          video.id, newOrderNumber, sectionId);
+      await PerformanceOptimizer.withTimeout(
+        PerformanceOptimizer.debounce(
+          () => CourseVideosService.updateVideoOrder(
+              video.id, newIndex, sectionId),
+          key:
+              'reorder_video_${video.id}_${DateTime.now().millisecondsSinceEpoch}',
+          duration: const Duration(milliseconds: 300),
+        ),
+        const Duration(seconds: 8),
+        'video_reorder',
+      );
 
-      // إعادة تحميل البيانات
+      _dismissLoadingDialog(loadingDialog);
+      loadingDialog = null;
+
+      final String? currentVideoId = _selectedVideo?.id;
+
       await _loadVideosAndSections();
-    } catch (e) {
-      debugPrint('خطأ في إعادة ترتيب الفيديو: $e');
+
+      if (mounted &&
+          currentVideoId != null &&
+          _videos.any((v) => v.id == currentVideoId)) {
+        setState(() {
+          _selectedVideo = _videos.firstWhere((v) => v.id == currentVideoId);
+        });
+      }
+
       if (mounted) {
-        // إظهار رسالة خطأ للمستخدم
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('تم تحديث ترتيب الفيديوهات بنجاح'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      LoggingUtils.debugLog('❌ خطأ في إعادة ترتيب الفيديو: $e');
+
+      if (loadingDialog != null) {
+        _dismissLoadingDialog(loadingDialog);
+      }
+
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('حدث خطأ أثناء إعادة ترتيب الفيديو: $e'),
@@ -1014,21 +1227,366 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
           ),
         );
       }
-    } finally {
+    }
+  }
+
+  Future<void> _handleSectionReorder(
+      CourseSection section, int newIndex) async {
+    DialogRoute? loadingDialog;
+
+    try {
+      loadingDialog = DialogRoute<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          content: SizedBox(
+            width: 300,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(color: AppColors.buttonPrimary),
+                SizedBox(width: 20),
+                Flexible(
+                  child: Text('جاري إعادة ترتيب الأقسام...'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      Navigator.of(context).push(loadingDialog);
+
+      LoggingUtils.debugLog(
+          '🔄 بدء إعادة ترتيب القسم: ${section.title} إلى الموضع: ${newIndex + 1}');
+
+      final uniqueKey =
+          'section_reorder_${section.id}_${DateTime.now().millisecondsSinceEpoch}';
+
+      final shouldProceed = await PerformanceOptimizer.withTimeout(
+        PerformanceOptimizer.throttle(
+          () async {
+            try {
+              await CourseVideosService.updateSectionOrder(
+                  section.id, newIndex + 1);
+            } catch (e) {
+              LoggingUtils.debugLog('❌ خطأ داخلي في إعادة ترتيب القسم: $e');
+              rethrow;
+            }
+          },
+          key: uniqueKey,
+          duration: const Duration(milliseconds: 500),
+        ),
+        const Duration(seconds: 10),
+        'section_reorder',
+        fallbackValue: true,
+      );
+
+      _dismissLoadingDialog(loadingDialog);
+      loadingDialog = null;
+
+      if (!shouldProceed) return;
+
+      final String? selectedVideoId = _selectedVideo?.id;
+
+      await _loadVideosAndSections();
+
+      if (selectedVideoId != null && mounted) {
+        final int videoIndex =
+            _videos.indexWhere((v) => v.id == selectedVideoId);
+        if (videoIndex >= 0) {
+          setState(() {
+            _selectedVideo = _videos[videoIndex];
+          });
+        }
+      }
+
       if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('تم تحديث ترتيب الأقسام والفيديوهات بنجاح'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      LoggingUtils.debugLog('❌ خطأ في إعادة ترتيب الأقسام: $e');
+
+      if (loadingDialog != null) {
+        _dismissLoadingDialog(loadingDialog);
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('حدث خطأ أثناء إعادة ترتيب الأقسام: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
       }
     }
   }
 
+  void _dismissLoadingDialog(DialogRoute? dialog) {
+    if (dialog != null && mounted) {
+      try {
+        if (Navigator.of(context).canPop()) {
+          Navigator.of(context).removeRoute(dialog);
+        }
+      } catch (e) {
+        LoggingUtils.debugLog('⚠️ Error dismissing dialog: $e');
+
+        if (mounted && Navigator.of(context).canPop()) {
+          Navigator.of(context).pop();
+        }
+      }
+    }
+  }
+
+  Future<void> _showReorderVideoDialog(CourseVideo video) async {
+    LoggingUtils.debugLog(
+        "🔄 Opening reorder dialog for video: ${video.title}");
+
+    try {
+      final result = await CourseVideoDialogUtils.showReorderVideoDialog(
+        context,
+        video,
+        _sections,
+        _videosBySection,
+        _uncategorizedVideos,
+      );
+
+      LoggingUtils.debugLog("📊 Dialog result: $result");
+
+      if (result != null) {
+        final String? targetSectionId = result['sectionId'];
+        final int targetPosition = result['position'];
+
+        await Future.delayed(const Duration(milliseconds: 50));
+
+        await _handleReorderVideo(video, targetPosition, targetSectionId);
+      }
+    } catch (e) {
+      LoggingUtils.debugLog("❌ Error showing reorder dialog: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('حدث خطأ أثناء محاولة إعادة الترتيب: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Widget _buildVideosList() {
+    return RepaintBoundary(
+      child: ValueListenableBuilder<bool>(
+        valueListenable: _sectionExpandStateNotifier,
+        builder: (context, _, __) {
+          return CourseVideoListComponent.buildVideosList(
+            videos: _videos,
+            sections: _sections,
+            videosBySection: _videosBySection,
+            uncategorizedVideos: _uncategorizedVideos,
+            expandedSections: _expandedSections,
+            scrollController: _mainScrollController,
+            selectedVideo: _selectedVideo,
+            onToggleSection: _toggleSection,
+            onPlayVideoInline: _playVideoInline,
+            onAddNewVideo: _addNewVideo,
+            onPlayVideo: _playVideo,
+            videoPositions: _videoPlaybackPositions,
+            onReorderVideo: _handleReorderVideo,
+            onReorderSection: _handleSectionReorder,
+            onReorderRequested: _showReorderVideoDialog,
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildLoadingState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const CustomProgressIndicator(),
+          const SizedBox(height: 10),
+          Text(
+            'جاري تحميل الفيديوهات...',
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFixedCurrentVideoBar() {
+    if (_selectedVideo == null) return const SizedBox.shrink();
+
+    final bgColor = Color.fromARGB(255, 70, 115, 174);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: bgColor,
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.buttonPrimary.withOpacity(0.15),
+            blurRadius: 10,
+            offset: const Offset(0, -3),
+          ),
+        ],
+        borderRadius: const BorderRadius.only(
+          topLeft: Radius.circular(13),
+          topRight: Radius.circular(13),
+        ),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            bgColor.withOpacity(0.95),
+            bgColor,
+          ],
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(
+        children: [
+          Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: Colors.white.withOpacity(0.2),
+                width: 1,
+              ),
+            ),
+            child: const Center(
+              child: Icon(
+                Icons.video_library,
+                color: Colors.white,
+                size: 16,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'قيد التشغيل الآن',
+                  style: TextStyle(
+                    fontSize: 8,
+                    color: Colors.white.withOpacity(0.8),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                Text(
+                  _selectedVideo!.title,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildNavigationButton(
+                icon: Icons.skip_previous,
+                enabled: _findPreviousVideo() != null,
+                onPressed: _navigateToPreviousVideo,
+                tooltip: 'الفيديو السابق',
+              ),
+              const SizedBox(width: 4),
+              _buildNavigationButton(
+                icon: Icons.skip_next,
+                enabled: _findNextVideo() != null,
+                onPressed: _navigateToNextVideo,
+                tooltip: 'الفيديو التالي',
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNavigationButton({
+    required IconData icon,
+    required bool enabled,
+    required VoidCallback onPressed,
+    required String tooltip,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      textStyle: const TextStyle(fontSize: 10, color: Colors.white),
+      child: InkWell(
+        onTap: enabled ? onPressed : null,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: enabled
+                ? Colors.white.withOpacity(0.2)
+                : Colors.white.withOpacity(0.05),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: enabled
+                  ? Colors.white.withOpacity(0.3)
+                  : Colors.white.withOpacity(0.1),
+              width: 1,
+            ),
+          ),
+          child: Center(
+            child: Icon(
+              icon,
+              color: enabled ? Colors.white : Colors.white.withOpacity(0.4),
+              size: 16,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFloatingActionButton() {
+    return Positioned(
+      bottom: 75,
+      left: 14,
+      child: FloatingActionButton(
+        onPressed: _addNewVideo,
+        backgroundColor: AppColors.buttonPrimary,
+        foregroundColor: Colors.white,
+        elevation: 2,
+        mini: true,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(13),
+        ),
+        child: const Icon(Icons.add, size: 20),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    // استخدام مفتاح فريد لكل بناء للشاشة - لمنع مشكلة المفاتيح المكررة
     final screenKey = UniqueKey();
 
-    // Handle fullscreen mode
     if (_isVideoExpanded && _selectedVideo != null) {
       return WillPopScope(
         onWillPop: () async {
@@ -1045,155 +1603,202 @@ class _CourseVideosScreenState extends State<CourseVideosScreen>
       );
     }
 
-    // Main UI
-    return Scaffold(
-      key: screenKey,
-      backgroundColor: Colors.white,
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [AppColors.primaryLight, Colors.white, Colors.white],
+    return GestureDetector(
+      onTap: () {},
+      behavior: HitTestBehavior.translucent,
+      child: Scaffold(
+        key: screenKey,
+        backgroundColor: AppColors.primaryBg,
+        extendBodyBehindAppBar: true,
+        appBar: PreferredSize(
+          preferredSize: const Size.fromHeight(0),
+          child: AppBar(
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            systemOverlayStyle: const SystemUiOverlayStyle(
+              statusBarColor: Colors.transparent,
+              statusBarIconBrightness: Brightness.dark,
+            ),
           ),
         ),
-        child: SafeArea(
-          child: Stack(
-            children: [
-              Column(
-                children: [
-                  // تحديث زر التحديث لاستخدام الدالة المحسنة
-                  CourseVideoHeader(
-                    title: widget.course.title,
-                    onBack: () => Navigator.of(context).pop(),
-                    onRefresh: _refreshVideos, // استخدام الدالة المحسنة
-                    selectedPlayerId: _selectedPlayerType,
-                    onPlayerChanged: _changePlayerType,
-                    isDrmProtected: _isDrmProtected,
-                  ),
-
-                  // Embedded player - يظل دائماً مرئياً في الأعلى
-                  if (!_isLoading &&
-                      _errorMessage == null &&
-                      _selectedVideo != null)
-                    Builder(
-                      builder: (context) => Padding(
-                        padding: const EdgeInsets.fromLTRB(
-                            16, 8, 16, 0), // تقليل الهامش السفلي
-                        child: _buildEmbeddedPlayer(),
-                      ),
-                    ),
-                  // مشغل الفيديو (يظل مرئياً دائماً في الأعلى)
-                  // زر الاستمرار في تصفح القائمة (يظهر فقط عندما تكون التفاصيل مخفية)
-                  if (!_isLoading &&
-                      _errorMessage == null &&
-                      _selectedVideo != null &&
-                      !_isDetailsVisible)
+        body: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                AppColors.primaryLight,
+                AppColors.primaryMedium,
+                AppColors.primaryBg,
+              ],
+            ),
+          ),
+          child: SafeArea(
+            child: Stack(
+              children: [
+                Column(
+                  children: [
                     Padding(
                       padding: const EdgeInsets.symmetric(
-                          vertical: 2, horizontal: 16),
+                          horizontal: 12.0, vertical: 8.0),
                       child: Row(
                         children: [
-                          Text(
-                            'اختر فيديو آخر:',
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.grey.shade700,
-                            ),
-                          ),
-                          const Spacer(),
-                          TextButton(
-                            onPressed: () {
-                              setState(() {
-                                _isDetailsVisible = true;
-                              });
-                              // حذف كود التمرير التلقائي للأعلى هنا أيضاً
-                            },
-                            style: TextButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 8, vertical: 0),
-                              minimumSize: const Size(0, 24),
-                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            ),
-                            child: const Text('عرض التفاصيل'),
-                          ),
-                        ],
-                      ),
-                    ),
-                  // زر التمرير التلقائي للأعلى (يظهر فقط عندما تكون التفاصيل مخفية)
-                  if (!_isLoading &&
-                      _errorMessage == null &&
-                      _selectedVideo != null &&
-                      !_isDetailsVisible)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                          vertical: 2, horizontal: 16),
-                      child: Row(
-                        children: [
-                          Text(
-                            'اختر فيديو آخر:',
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.grey.shade700,
-                            ),
-                          ),
-                          const Spacer(),
-                          TextButton(
-                            onPressed: () {
-                              _scrollController.animateTo(0,
-                                  duration: const Duration(milliseconds: 300),
-                                  curve: Curves.easeInOut);
-                            },
-                            style: TextButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 8, vertical: 0),
-                              minimumSize: const Size(0, 24),
-                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            ),
-                            child: const Text('التمرير للأعلى'),
-                          ),
-                        ],
-                      ),
-                    ),
-                  // Video list
-                  Expanded(
-                    child: _isLoading
-                        ? const Center(child: CustomProgressIndicator())
-                        : _errorMessage != null
-                            ? CourseVideoUIUtils.buildErrorState(
-                                _errorMessage, _loadVideosAndSections)
-                            : CourseVideoListComponent.buildVideosList(
-                                videos: _videos,
-                                sections: _sections,
-                                videosBySection: _videosBySection,
-                                uncategorizedVideos: _uncategorizedVideos,
-                                expandedSections: _expandedSections,
-                                scrollController: _scrollController,
-                                selectedVideo: _selectedVideo,
-                                onToggleSection: _toggleSection,
-                                onPlayVideoInline: _playVideoInline,
-                                onAddNewVideo: _addNewVideo,
-                                onPlayVideo: _playVideo,
-                                videoPositions: _videoPositions,
-                                onReorderVideo:
-                                    _handleReorderVideo, // إضافة معالج إعادة الترتيب
+                          Expanded(
+                            child: Text(
+                              widget.course.title,
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                                color: AppColors.buttonPrimary,
                               ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          PopupMenuButton<String>(
+                            icon: const Icon(
+                              Icons.more_vert,
+                              color: AppColors.buttonPrimary,
+                              size: 16,
+                            ),
+                            itemBuilder: (context) => [
+                              const PopupMenuItem(
+                                value: 'refresh',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.refresh,
+                                        size: 14,
+                                        color: AppColors.buttonPrimary),
+                                    SizedBox(width: 6),
+                                    Text('تحديث',
+                                        style: TextStyle(fontSize: 12)),
+                                  ],
+                                ),
+                              ),
+                              const PopupMenuItem(
+                                value: 'player_iframe',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.web,
+                                        size: 14,
+                                        color: AppColors.buttonPrimary),
+                                    SizedBox(width: 6),
+                                    Text('مشغل iframe',
+                                        style: TextStyle(fontSize: 12)),
+                                  ],
+                                ),
+                              ),
+                              const PopupMenuItem(
+                                value: 'player_media_kit',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.play_circle_fill,
+                                        size: 14,
+                                        color: AppColors.buttonPrimary),
+                                    SizedBox(width: 6),
+                                    Text('مشغل Media Kit',
+                                        style: TextStyle(fontSize: 12)),
+                                  ],
+                                ),
+                              ),
+                            ],
+                            onSelected: (value) {
+                              if (value == 'refresh') {
+                                _refreshVideos();
+                              } else if (value.startsWith('player_')) {
+                                final playerType = value.substring(7);
+                                _changePlayerType(playerType);
+                              }
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (!_isLoading &&
+                        _errorMessage == null &&
+                        _selectedVideo != null)
+                      Container(
+                        constraints: BoxConstraints(
+                          maxHeight: MediaQuery.of(context).size.height * 0.5,
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+                          child: RepaintBoundary(
+                            child: _buildEmbeddedPlayer(),
+                          ),
+                        ),
+                      ),
+                    if (!_isLoading &&
+                        _errorMessage == null &&
+                        _videos.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Text(
+                                  'محتويات الكورس (${_videos.length})',
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: AppColors.textPrimary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 2),
+                            if (_selectedVideo != null)
+                              CourseVideoNavigationButtons(
+                                videos: _videos,
+                                selectedVideo: _selectedVideo!,
+                                onNavigate: (video) => _playVideoInline(video),
+                              ),
+                          ],
+                        ),
+                      ),
+                    Expanded(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: _isLoading
+                            ? _buildLoadingState()
+                            : _errorMessage != null
+                                ? CourseVideoUIUtils.buildErrorState(
+                                    _errorMessage, _loadVideosAndSections)
+                                : CustomScrollView(
+                                    controller: _mainScrollController,
+                                    physics: const BouncingScrollPhysics(),
+                                    slivers: [
+                                      SliverToBoxAdapter(
+                                        child: RepaintBoundary(
+                                          child: _buildVideosList(),
+                                        ),
+                                      ),
+                                      SliverToBoxAdapter(
+                                        child: SizedBox(height: 100),
+                                      ),
+                                    ],
+                                  ),
+                      ),
+                    ),
+                  ],
+                ),
+                if (!_isLoading &&
+                    _errorMessage == null &&
+                    _selectedVideo != null)
+                  Positioned(
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    child: _buildFixedCurrentVideoBar(),
                   ),
-                ],
-              ),
-
-              // إزالة المشغل المصغر العائم لأنه لم يعد مطلوباً
-            ],
+                _buildFloatingActionButton(),
+              ],
+            ),
           ),
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _addNewVideo,
-        backgroundColor: const Color.fromRGBO(0, 128, 255, 0.7),
-        foregroundColor: Colors.white,
-        child: const Icon(Icons.add, size: 22),
+        floatingActionButton: null,
       ),
     );
   }

@@ -1,0 +1,32 @@
+{
+  // تكبير حجم الواجهة إلى المستوى المتوسط
+  "window.zoomLevel": 0.6,
+  
+  // زيادة أحجام الخطوط لمستوى متوسط
+  "editor.fontSize": 16,
+  "terminal.integrated.fontSize": 16,
+  "editor.codeLensFontSize": 16,
+  "scm.inputFontSize": 16,
+  "debug.console.fontSize": 16,
+  
+  // تفعيل الوضع المدمج للشجرة مع مسافات معقولة
+  "workbench.tree.renderIndentGuides": "none",
+  "workbench.tree.indent": 10,
+  "editor.lineHeight": 1.4,
+  "workbench.list.horizontalScrolling": true,
+  
+  // تعديل العناصر الإضافية
+  "editor.minimap.enabled": false,
+  "breadcrumbs.enabled": false,
+  "editor.folding": true,
+  
+  // تقليل حجم عناصر واجهة المستخدم بشكل معتدل
+  // "window.density.editorTabHeight": "compact",
+  // "editor.accessibilityPageSize": 16,
+  // "workbench.editor.tabSizing": "shrink",
+  
+  // استخدام إعدادات الخط المناسبة للقراءة
+  "editor.fontFamily": "'Cascadia Code', Consolas, 'Courier New', monospace",
+  "editor.fontLigatures": true,
+  "cmake.sourceDirectory": "C:/Users/Ahmed-IT/Documents/GitHub/course/linux"
+}

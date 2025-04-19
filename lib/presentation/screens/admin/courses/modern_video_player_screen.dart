@@ -401,10 +401,9 @@ class _ModernVideoPlayerScreenState extends State<ModernVideoPlayerScreen> {
             ),
           ),
           const SizedBox(height: 12),
-          if (widget.video.description != null &&
-              widget.video.description!.isNotEmpty)
+          if (widget.video.description.isNotEmpty)
             Text(
-              widget.video.description!,
+              widget.video.description,
               style: AppTextStyles.bodyMedium.copyWith(
                 color: Colors.white70,
               ),

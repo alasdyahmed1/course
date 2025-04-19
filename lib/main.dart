@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart'; // إضافة هذا الاستيراد للحصول على kReleaseMode
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -8,6 +9,7 @@ import 'package:window_size/window_size.dart';
 import 'core/config/env_config.dart';
 import 'core/services/platform_helper.dart';
 import 'core/theme/app_theme.dart';
+import 'core/utils/logging_utils.dart';
 import 'core/utils/webview_platform_implementation.dart';
 import 'presentation/screens/splash_screen.dart';
 
@@ -15,10 +17,13 @@ void main() async {
   // Call WidgetsFlutterBinding.ensureInitialized first to initialize Flutter bindings
   WidgetsFlutterBinding.ensureInitialized();
 
+  // تكوين نظام تسجيل الرسائل التشخيصية
+  LoggingUtils.configureLogging();
+
   // Load environment variables
   await dotenv.load(fileName: ".env");
 
-  // Initialize WebView platform - تهيئة WebView بشكل صحيح في بداية التطبيق
+  // Initialize WebView platform
   try {
     WebViewPlatformImplementation.initializeWebView();
     debugPrint('✅ WebView platform initialized successfully');
@@ -44,8 +49,11 @@ void main() async {
   await Supabase.initialize(
     url: EnvConfig.supabaseUrl,
     anonKey: EnvConfig.supabaseAnonKey,
-    debug: true,
+    debug: kDebugMode,
   );
+
+  // تعطيل الرسائل التشخيصية غير الضرورية في وضع الإنتاج (تم نقلها إلى LoggingUtils)
+  // التنفيذ في مكان واحد للحفاظ على التماسك
 
   runApp(MainApp());
 }
@@ -56,6 +64,8 @@ class MainApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // تم نقل تعيين ContextUtils إلى مكان أكثر ملاءمة
+
     return MaterialApp(
       navigatorKey: navigatorKey,
       title: 'كورساتي',

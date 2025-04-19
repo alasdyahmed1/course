@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 class CourseSection {
   final String id;
   final String courseId;
@@ -7,17 +9,7 @@ class CourseSection {
   final bool isPublished;
   final DateTime createdAt;
   final DateTime updatedAt;
-
-  // This should be set when loading the section with its videos
-  int _videoCount = 0;
-
-  // Getter for the video count
-  int get videoCount => _videoCount;
-
-  // Setter for the video count (can be updated after loading videos)
-  set videoCount(int count) {
-    _videoCount = count;
-  }
+  int videoCount;
 
   CourseSection({
     required this.id,
@@ -28,22 +20,26 @@ class CourseSection {
     required this.isPublished,
     required this.createdAt,
     required this.updatedAt,
+    this.videoCount = 0,
   });
 
   factory CourseSection.fromJson(Map<String, dynamic> json) {
+    final int orderNum = json['order_number'] ?? 1;
+    final DateTime created = DateTime.parse(json['created_at']);
+    final DateTime updated = DateTime.parse(json['updated_at']);
+
+    debugPrint('📦 تحميل القسم: ${json['title']} [الترتيب: $orderNum]');
+
     return CourseSection(
       id: json['id'] ?? '',
       courseId: json['course_id'] ?? '',
       title: json['title'] ?? '',
       description: json['description'],
-      orderNumber: json['order_number'] ?? 0,
+      orderNumber: orderNum,
       isPublished: json['is_published'] ?? true,
-      createdAt: json['created_at'] != null
-          ? DateTime.parse(json['created_at'])
-          : DateTime.now(),
-      updatedAt: json['updated_at'] != null
-          ? DateTime.parse(json['updated_at'])
-          : DateTime.now(),
+      createdAt: created,
+      updatedAt: updated,
+      videoCount: json['video_count'] ?? 0,
     );
   }
 
@@ -57,6 +53,7 @@ class CourseSection {
       'is_published': isPublished,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
+      'video_count': videoCount,
     };
   }
 
@@ -69,6 +66,7 @@ class CourseSection {
     bool? isPublished,
     DateTime? createdAt,
     DateTime? updatedAt,
+    int? videoCount,
   }) {
     return CourseSection(
       id: id ?? this.id,
@@ -79,17 +77,12 @@ class CourseSection {
       isPublished: isPublished ?? this.isPublished,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
+      videoCount: videoCount ?? this.videoCount,
     );
   }
 
-  // Add equals operator override to ensure proper comparison in dropdown
   @override
-  bool operator ==(Object other) {
-    if (identical(this, other)) return true;
-    return other is CourseSection && other.id == id;
+  String toString() {
+    return 'CourseSection{id: $id, title: $title, orderNumber: $orderNumber}';
   }
-
-  // Add hashCode override to go with equals override
-  @override
-  int get hashCode => id.hashCode;
 }
